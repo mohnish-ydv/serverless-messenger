@@ -22,7 +22,6 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 
@@ -49,7 +48,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -250,16 +248,10 @@ private fun WelcomeScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
             .padding(horizontal = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        Spacer(Modifier.weight(1f))
-
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
         BrandMark()
 
         Spacer(Modifier.height(32.dp))
@@ -294,15 +286,9 @@ private fun WelcomeScreen(
 
         Text(
             text = "No account. No central inbox.",
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = 12.sp,
             color = SecondaryText
         )
-        }
-
-        Spacer(Modifier.weight(1f))
-
-        Spacer(Modifier.height(16.dp))
     }
 }
 
@@ -445,15 +431,6 @@ private fun IdentityScreen(
         )
 
         Spacer(Modifier.height(24.dp))
-
-        Text(
-            text = "PUBLIC PROFILE",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = SecondaryText
-        )
-
-        Spacer(Modifier.height(8.dp))
 
         IdentityPanel(
             username = username,
@@ -1109,6 +1086,7 @@ private fun AddContactScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 24.dp)
     ) {
         AppTopBar(
@@ -1165,39 +1143,6 @@ private fun AddContactScreen(
                     onError = { error ->
                         verificationError = error
                     }
-                )
-
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(220.dp)
-                        .border(
-                            width = 2.dp,
-                            color = AppWhite.copy(alpha = 0.9f),
-                            shape = RoundedCornerShape(24.dp)
-                        )
-                )
-
-                Text(
-                    text = "Align the QR code inside the frame",
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(
-                            start = 20.dp,
-                            end = 20.dp,
-                            bottom = 20.dp
-                        )
-                        .background(
-                            Color.Black.copy(alpha = 0.55f),
-                            RoundedCornerShape(50)
-                        )
-                        .padding(
-                            horizontal = 16.dp,
-                            vertical = 9.dp
-                        ),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = AppWhite
                 )
             } else if (!cameraGranted) {
                 Column(
@@ -1299,12 +1244,6 @@ private fun AddContactScreen(
         }
 
         Spacer(Modifier.height(16.dp))
-
-        Spacer(
-            modifier = Modifier
-                .navigationBarsPadding()
-                .height(1.dp)
-        )
     }
 
     verifiedInvite?.let { invite ->
@@ -1382,7 +1321,6 @@ private fun ChatsScreen(
 ) {
     val context = LocalContext.current
     val contactStore = remember { ContactStore(context) }
-    val messageStore = remember { MessageStore(context) }
 
     val contacts by contactStore.contacts.collectAsState(
         initial = emptyList()
@@ -1414,11 +1352,10 @@ private fun ChatsScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
                 .padding(
                     start = 24.dp,
                     end = 16.dp,
-                    top = 10.dp,
+                    top = 18.dp,
                     bottom = 12.dp
                 ),
             verticalAlignment = Alignment.CenterVertically
@@ -1544,19 +1481,12 @@ private fun ChatsScreen(
                     items = filteredContacts,
                     key = { it.identityId }
                 ) { contact ->
-                    val summary by messageStore.summary(
-                        conversationId = contact.identityId,
-                        peerSigningPublicKeyBase64 = contact.publicKeyBase64
-                    ).collectAsState(
-                        initial = ConversationSummary(
-                            lastMessage = null,
-                            unreadCount = 0
-                        )
-                    )
-
                     ChatRow(
                         contact = contact,
-                        summary = summary,
+                        summary = ConversationSummary(
+                            lastMessage = null,
+                            unreadCount = 0
+                        ),
                         onClick = {
                             onOpen(contact.identityId)
                         }
@@ -2282,15 +2212,7 @@ private fun SettingsScreen(
 
             Switch(
                 checked = developerMode,
-                onCheckedChange = onDeveloperModeChanged,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = AppWhite,
-                    checkedTrackColor = BrandBlue,
-                    checkedBorderColor = BrandBlue,
-                    uncheckedThumbColor = AppWhite,
-                    uncheckedTrackColor = Color(0xFFE0E0E0),
-                    uncheckedBorderColor = Color(0xFF9E9E9E)
-                )
+                onCheckedChange = onDeveloperModeChanged
             )
         }
 
@@ -2353,7 +2275,6 @@ private fun ChatTopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .statusBarsPadding()
             .background(BrandBlue)
             .padding(
                 horizontal = 12.dp,
@@ -2500,7 +2421,6 @@ private fun ChatInput(
         modifier = Modifier
             .fillMaxWidth()
             .imePadding()
-            .navigationBarsPadding()
             .padding(
                 horizontal = 12.dp,
                 vertical = 10.dp
@@ -2679,7 +2599,6 @@ private fun AppTopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .statusBarsPadding()
             .height(64.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
