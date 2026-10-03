@@ -1,0 +1,2417 @@
+package com.mohnish.serverlessmessenger.ui
+
+import kotlinx.coroutines.launch
+
+import androidx.compose.runtime.rememberCoroutineScope
+import com.mohnish.serverlessmessenger.data.ContactDirectory
+import com.mohnish.serverlessmessenger.data.ContactStore
+import com.mohnish.serverlessmessenger.data.ProfileStore
+import com.mohnish.serverlessmessenger.data.ConversationSummary
+import com.mohnish.serverlessmessenger.data.MessageStore
+import com.mohnish.serverlessmessenger.data.MessageOutbox
+import com.mohnish.serverlessmessenger.transport.NostrPeerSignaling
+import com.mohnish.serverlessmessenger.transport.PeerConnectionManager
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+
+import com.mohnish.serverlessmessenger.security.DeviceIdentityManager
+import com.mohnish.serverlessmessenger.security.SignalingCrypto
+import com.mohnish.serverlessmessenger.security.NostrIdentityManager
+import com.mohnish.serverlessmessenger.security.NostrCrypto
+import com.mohnish.serverlessmessenger.scanner.QrScanner
+import com.mohnish.serverlessmessenger.scanner.QrImageDecoder
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material.icons.outlined.QrCode2
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Videocam
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.rememberModalBottomSheetState
+import com.mohnish.serverlessmessenger.ui.theme.AppWhite
+import com.mohnish.serverlessmessenger.ui.theme.Border
+import com.mohnish.serverlessmessenger.ui.theme.BrandBlue
+import com.mohnish.serverlessmessenger.ui.theme.PrimaryText
+import com.mohnish.serverlessmessenger.ui.theme.SecondaryText
+import com.mohnish.serverlessmessenger.ui.theme.Surface
+
+private enum class Screen {
+    Welcome,
+    Identity,
+    AddContact,
+    Chats,
+    Chat
+}
+
+private data class Message(
+    val id: String,
+    val text: String,
+    val mine: Boolean,
+    val time: String
+)
+
+@Composable
+fun MessengerApp() {
+    val context = LocalContext.current
+    val appScope = rememberCoroutineScope()
+
+    val messageStore =
+        remember { MessageStore(context) }
+
+    val contactStore =
+        remember { ContactStore(context) }
+
+    val contactDirectory =
+        remember {
+            ContactDirectory(
+                contactStore = contactStore,
+                scope = appScope
+            )
+        }
+
+    val signaling =
+        remember {
+            NostrPeerSignaling(
+                context = context,
+                contactDirectory = contactDirectory
+            )
+        }
+
+    val peerConnectionManager =
+        remember {
+            PeerConnectionManager(
+                context = context,
+                messageStore = messageStore,
+                signaling = signaling,
+                scope = appScope
+            )
+        }
+
+    var screen by remember { mutableStateOf(Screen.Welcome) }
+    var activeContact by remember { mutableStateOf("Alex") }
+
+    when (screen) {
+        Screen.Welcome -> WelcomeScreen {
+            screen = Screen.Identity
+        }
+
+        Screen.Identity -> IdentityScreen(
+            signaling = signaling,
+            onBack = { screen = Screen.Welcome },
+            onAddContact = { screen = Screen.AddContact },
+            onContinue = { screen = Screen.Chats }
+        )
+
+        Screen.AddContact -> AddContactScreen(
+            onBack = { screen = Screen.Identity },
+            onDone = { screen = Screen.Chats }
+        )
+
+        Screen.Chats -> ChatsScreen(
+            onAdd = { screen = Screen.AddContact },
+            onOpen = {
+                activeContact = it
+                screen = Screen.Chat
+            }
+        )
+
+        Screen.Chat -> ChatScreen(
+            identityId = activeContact,
+            peerConnectionManager = peerConnectionManager,
+            onBack = { screen = Screen.Chats }
+        )
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Welcome                                                                     */
+/* -------------------------------------------------------------------------- */
+
+@Composable
+private fun WelcomeScreen(
+    onStart: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        BrandMark()
+
+        Spacer(Modifier.height(32.dp))
+
+        Text(
+            text = "Messaging,\nwithout the middleman.",
+            fontSize = 32.sp,
+            lineHeight = 38.sp,
+            fontWeight = FontWeight.Bold,
+            color = PrimaryText,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            text = "Your identity, conversations and messages\nstay on your devices.",
+            fontSize = 16.sp,
+            lineHeight = 24.sp,
+            color = SecondaryText,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(Modifier.height(48.dp))
+
+        PrimaryButton(
+            text = "Get Started",
+            onClick = onStart
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            text = "No account. No central inbox.",
+            fontSize = 12.sp,
+            color = SecondaryText
+        )
+    }
+}
+
+@Composable
+private fun BrandMark() {
+    Box(
+        modifier = Modifier
+            .size(76.dp)
+            .clip(CircleShape)
+            .background(BrandBlue),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+        )
+
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(BrandBlue)
+        )
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Identity                                                                    */
+/* -------------------------------------------------------------------------- */
+
+@Composable
+private fun IdentityScreen(
+    signaling: NostrPeerSignaling,
+    onBack: () -> Unit,
+    onAddContact: () -> Unit,
+    onContinue: () -> Unit
+) {
+    val context = LocalContext.current
+    val profileStore = remember { ProfileStore(context) }
+    val coroutineScope = rememberCoroutineScope()
+
+    val identity = remember(context) {
+        DeviceIdentityManager.getOrCreate(context)
+    }
+    val savedUsername by profileStore.username.collectAsState(initial = "")
+
+    var username by remember(savedUsername) {
+        mutableStateOf(savedUsername)
+    }
+
+    var showQr by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
+
+    val usernameValid = username.trim().let {
+        it.length in 3..20 &&
+            it.matches(Regex("[A-Za-z0-9_]+"))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 24.dp)
+    ) {
+        AppTopBar(
+            title = "Your identity",
+            onBack = onBack
+        )
+
+        Spacer(Modifier.height(28.dp))
+
+        Text(
+            text = "Choose your\nusername.",
+            fontSize = 30.sp,
+            lineHeight = 36.sp,
+            fontWeight = FontWeight.Bold,
+            color = PrimaryText
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Text(
+            text = "People will see your username. Your cryptographic identity stays private and works underneath.",
+            fontSize = 15.sp,
+            lineHeight = 23.sp,
+            color = SecondaryText
+        )
+
+        Spacer(Modifier.height(28.dp))
+
+        Text(
+            text = "USERNAME",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = SecondaryText
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = username,
+            onValueChange = {
+                username = it
+                    .removePrefix("@")
+                    .filter { char ->
+                        char.isLetterOrDigit() || char == '_'
+                    }
+                    .take(20)
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            leadingIcon = {
+                Text(
+                    text = "@",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = BrandBlue
+                )
+            },
+            placeholder = {
+                Text("username")
+            },
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = BrandBlue,
+                unfocusedBorderColor = Border,
+                focusedContainerColor = Surface,
+                unfocusedContainerColor = Surface
+            )
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            text = "3–20 characters • letters, numbers and _",
+            fontSize = 12.sp,
+            color = SecondaryText
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        IdentityPanel(
+            username = username,
+            identityId = identity.identityId,
+            onShowQr = { showQr = true }
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        SecondaryAction(
+            icon = Icons.Outlined.PersonAdd,
+            text = "Add a contact",
+            onClick = onAddContact
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        SecondaryAction(
+            icon = Icons.Outlined.Settings,
+            text = "Connection diagnostics",
+            onClick = { showDiagnostics = true }
+        )
+
+        Spacer(Modifier.weight(1f))
+
+        PrimaryButton(
+            text = "Continue to Chats",
+            onClick = {
+                if (!usernameValid) return@PrimaryButton
+
+                coroutineScope.launch {
+                    profileStore.setUsername(username)
+                    onContinue()
+                }
+            }
+        )
+
+        Spacer(Modifier.height(16.dp))
+    }
+
+    if (showQr) {
+        IdentityQrDialog(
+            username = username,
+            identityId = identity.identityId,
+            publicKeyBase64 = identity.publicKeyBase64,
+            onDismiss = { showQr = false }
+        )
+    }
+
+    if (showDiagnostics) {
+        ConnectionDiagnosticsDialog(
+            signaling = signaling,
+            onDismiss = { showDiagnostics = false }
+        )
+    }
+}
+
+@Composable
+private fun ConnectionDiagnosticsDialog(
+    signaling: NostrPeerSignaling,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+
+    val identity = remember(context) {
+        DeviceIdentityManager.getOrCreate(context)
+    }
+
+    val nostrIdentity = remember(context) {
+        NostrIdentityManager.getOrCreate(context)
+    }
+
+    var running by remember { mutableStateOf(false) }
+    var identityResult by remember { mutableStateOf<String?>(null) }
+    var nostrResult by remember { mutableStateOf<String?>(null) }
+    var cryptoResult by remember { mutableStateOf<String?>(null) }
+    var relayResult by remember { mutableStateOf<String?>(null) }
+    var webRtcResult by remember { mutableStateOf<String?>(null) }
+
+    fun runTests() {
+        running = true
+
+        identityResult = null
+        nostrResult = null
+        cryptoResult = null
+        relayResult = null
+        webRtcResult = null
+
+        identityResult =
+            if (
+                identity.identityId.length == 32 &&
+                identity.publicKeyBase64.isNotBlank() &&
+                identity.agreementPublicKeyBase64.isNotBlank() &&
+                identity.nostrPublicKeyHex.length == 64
+            ) {
+                "PASS — device identity"
+            } else {
+                "FAIL — device identity"
+            }
+
+        try {
+            val message =
+                java.security.MessageDigest
+                    .getInstance("SHA-256")
+                    .digest(
+                        "serverless-diagnostic".toByteArray()
+                    )
+
+            val signature =
+                NostrCrypto.sign(
+                    nostrIdentity.privateKey,
+                    message
+                )
+
+            val valid =
+                NostrCrypto.verify(
+                    nostrIdentity.publicKey,
+                    message,
+                    signature
+                )
+
+            nostrResult =
+                if (valid) {
+                    "PASS — Nostr signing"
+                } else {
+                    "FAIL — signature verification"
+                }
+        } catch (e: Exception) {
+            nostrResult =
+                "FAIL — Nostr: ${e.message ?: "unknown error"}"
+        }
+
+        try {
+            val plaintext =
+                """{"diagnostic":"ok","version":1}"""
+
+            val encrypted =
+                SignalingCrypto.encrypt(
+                    senderIdentityId = identity.identityId,
+                    recipientIdentityId = identity.identityId,
+                    recipientAgreementPublicKeyBase64 =
+                        identity.agreementPublicKeyBase64,
+                    plaintext = plaintext
+                )
+
+            val decrypted =
+                SignalingCrypto.decrypt(
+                    recipientIdentityId = identity.identityId,
+                    senderIdentityId = identity.identityId,
+                    senderAgreementPublicKeyBase64 =
+                        identity.agreementPublicKeyBase64,
+                    envelope = encrypted
+                )
+
+            cryptoResult =
+                if (decrypted == plaintext) {
+                    "PASS — ECDH + AES-GCM"
+                } else {
+                    "FAIL — decrypted value mismatch"
+                }
+        } catch (e: Exception) {
+            cryptoResult =
+                "FAIL — crypto: ${e.message ?: "unknown error"}"
+        }
+
+        try {
+            val transport =
+                com.mohnish.serverlessmessenger.transport.WebRtcTransport(
+                    context
+                )
+
+            transport.onLocalDescription = {
+                webRtcResult =
+                    "PASS — WebRTC offer + DataChannel setup"
+            }
+
+            transport.onStateChanged = { state ->
+                if (
+                    state ==
+                    com.mohnish.serverlessmessenger.transport.TransportState.FAILED
+                ) {
+                    webRtcResult =
+                        "FAIL — WebRTC transport failed"
+                    transport.close()
+                }
+            }
+
+            webRtcResult =
+                "RUNNING — WebRTC offer test"
+
+            transport.createOffer()
+        } catch (e: Throwable) {
+            webRtcResult =
+                "FAIL — WebRTC: ${e.message ?: e.javaClass.simpleName}"
+        }
+
+        signaling.testRelay { success, message ->
+            android.os.Handler(
+                android.os.Looper.getMainLooper()
+            ).post {
+                relayResult =
+                    if (success) {
+                        "PASS — $message"
+                    } else {
+                        "FAIL — $message"
+                    }
+
+                running = false
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!running) {
+                onDismiss()
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (!running) {
+                        onDismiss()
+                    }
+                }
+            ) {
+                Text(
+                    text = "Done",
+                    color = BrandBlue,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            if (!running) {
+                TextButton(
+                    onClick = ::runTests
+                ) {
+                    Text(
+                        text = "Run tests",
+                        color = BrandBlue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        },
+        title = {
+            Text(
+                text = "Connection diagnostics",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Checks the real identity, crypto and relay path.",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = SecondaryText
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                DiagnosticRow("Device identity", identityResult)
+                DiagnosticRow("Nostr identity", nostrResult)
+                DiagnosticRow("Signaling crypto", cryptoResult)
+                DiagnosticRow("WebRTC", webRtcResult)
+                DiagnosticRow("Nostr relay", relayResult)
+
+                if (running) {
+                    Spacer(Modifier.height(12.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = BrandBlue,
+                            strokeWidth = 2.dp
+                        )
+
+                        Spacer(Modifier.width(10.dp))
+
+                        Text(
+                            text = "Testing connection…",
+                            fontSize = 13.sp,
+                            color = SecondaryText
+                        )
+                    }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun DiagnosticRow(
+    title: String,
+    result: String?
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+    ) {
+        Text(
+            text = title,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = PrimaryText
+        )
+
+        Text(
+            text = result ?: "Not tested",
+            fontSize = 13.sp,
+            color = SecondaryText
+        )
+    }
+}
+
+@Composable
+private fun IdentityPanel(
+    username: String,
+    identityId: String,
+    onShowQr: () -> Unit
+) {
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Surface)
+            .padding(20.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(CircleShape)
+                    .background(BrandBlue),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (username.isBlank()) {
+                        "?"
+                    } else {
+                        username.first().uppercase()
+                    },
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+
+            Spacer(Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (username.isBlank()) {
+                        "Your profile"
+                    } else {
+                        "@$username"
+                    },
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PrimaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Spacer(Modifier.height(4.dp))
+
+                Text(
+                    text = "Identity secured on this device",
+                    fontSize = 13.sp,
+                    color = SecondaryText
+                )
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        Text(
+            text = "CRYPTOGRAPHIC ID",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = SecondaryText
+        )
+
+        Spacer(Modifier.height(6.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = identityId.take(12) + "…",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                color = PrimaryText,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
+            )
+
+            IconButton(
+                onClick = {
+                    val clipboard =
+                        context.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as ClipboardManager
+
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText(
+                            "Serverless identity",
+                            identityId
+                        )
+                    )
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ContentCopy,
+                    contentDescription = "Copy cryptographic identity",
+                    tint = BrandBlue
+                )
+            }
+
+            IconButton(onClick = onShowQr) {
+                Icon(
+                    imageVector = Icons.Outlined.QrCode2,
+                    contentDescription = "Show identity QR",
+                    tint = BrandBlue
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun IdentityQrDialog(
+    username: String,
+    identityId: String,
+    publicKeyBase64: String,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = "Done",
+                    color = BrandBlue,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        title = {
+            Text(
+                text = "Your identity QR",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                val context = LocalContext.current
+
+                var qrBitmap by remember {
+                    mutableStateOf<android.graphics.Bitmap?>(null)
+                }
+
+                LaunchedEffect(username, identityId, publicKeyBase64) {
+                    qrBitmap = null
+
+                    val payload =
+                        DeviceIdentityManager.createInvitePayload(
+                            context = context,
+                            username = username
+                        )
+
+                    val matrix =
+                        com.google.zxing.MultiFormatWriter().encode(
+                            payload,
+                            com.google.zxing.BarcodeFormat.QR_CODE,
+                            640,
+                            640
+                        )
+
+                    qrBitmap =
+                        android.graphics.Bitmap.createBitmap(
+                            640,
+                            640,
+                            android.graphics.Bitmap.Config.ARGB_8888
+                        ).also { bitmap ->
+                            for (x in 0 until 640) {
+                                for (y in 0 until 640) {
+                                    bitmap.setPixel(
+                                        x,
+                                        y,
+                                        if (matrix[x, y]) {
+                                            android.graphics.Color.BLACK
+                                        } else {
+                                            android.graphics.Color.WHITE
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                }
+
+                qrBitmap?.let { bitmap ->
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription =
+                            "Serverless identity QR code",
+                        modifier = Modifier
+                            .size(240.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                    )
+                } ?: Box(
+                    modifier = Modifier
+                        .size(240.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        color = BrandBlue
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                Text(
+                    text = "Scan this code from another Serverless device to add this identity.",
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = SecondaryText,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Add contact                                                                 */
+/* -------------------------------------------------------------------------- */
+
+@Composable
+private fun AddContactScreen(
+    onBack: () -> Unit,
+    onDone: () -> Unit
+) {
+    val context = LocalContext.current
+    val contactStore = remember { ContactStore(context) }
+    val coroutineScope = rememberCoroutineScope()
+
+    var cameraGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    var scanEnabled by remember { mutableStateOf(true) }
+    var verificationError by remember { mutableStateOf<String?>(null) }
+    var verifiedInvite by remember {
+        mutableStateOf<com.mohnish.serverlessmessenger.security.IdentityInvite?>(null)
+    }
+
+    fun addVerifiedContact() {
+        val invite = verifiedInvite ?: return
+
+        coroutineScope.launch {
+            contactStore.addContact(
+                identityId = invite.identityId,
+                username = invite.username,
+                publicKeyBase64 = invite.publicKeyBase64,
+                agreementPublicKeyBase64 =
+                    invite.agreementPublicKeyBase64,
+                nostrPublicKeyHex =
+                    invite.nostrPublicKeyHex
+            )
+
+            onDone()
+        }
+    }
+
+    val permissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            cameraGranted = granted
+
+            if (!granted) {
+                verificationError = "Camera permission is required to scan a contact QR."
+            }
+        }
+
+    val imagePickerLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.GetContent()
+        ) { uri ->
+            if (uri == null) {
+                return@rememberLauncherForActivityResult
+            }
+
+            scanEnabled = false
+            verificationError = null
+
+            try {
+                val payload =
+                    QrImageDecoder.decode(
+                        context = context,
+                        uri = uri
+                    )
+
+                val invite =
+                    DeviceIdentityManager.verifyInvitePayload(
+                        payload
+                    )
+
+                verifiedInvite = invite
+                verificationError = null
+            } catch (e: Exception) {
+                verifiedInvite = null
+                verificationError =
+                    e.message
+                        ?: "No valid Serverless identity QR was found in that image."
+
+                scanEnabled = true
+            }
+        }
+
+    LaunchedEffect(Unit) {
+        if (!cameraGranted) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 24.dp)
+    ) {
+        AppTopBar(
+            title = "Add contact",
+            onBack = onBack
+        )
+
+        Spacer(Modifier.height(28.dp))
+
+        Text(
+            text = "Connect directly.",
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold,
+            color = PrimaryText
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            text = "Scan the other device's identity QR code to exchange the information needed for a direct connection.",
+            fontSize = 15.sp,
+            lineHeight = 23.sp,
+            color = SecondaryText
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color.Black)
+        ) {
+            if (cameraGranted && verifiedInvite == null) {
+                QrScanner(
+                    enabled = scanEnabled,
+                    onResult = { payload ->
+                        scanEnabled = false
+
+                        try {
+                            val invite =
+                                DeviceIdentityManager.verifyInvitePayload(payload)
+
+                            verifiedInvite = invite
+                            verificationError = null
+                        } catch (e: Exception) {
+                            verificationError =
+                                e.message ?: "This is not a valid Serverless identity QR."
+
+                            scanEnabled = true
+                        }
+                    },
+                    onError = { error ->
+                        verificationError = error
+                    }
+                )
+            } else if (!cameraGranted) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.QrCodeScanner,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(48.dp)
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Text(
+                        text = "Camera permission needed",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Text(
+                        text = "Allow camera access to scan a Serverless identity.",
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp,
+                        color = Color.White.copy(alpha = 0.75f)
+                    )
+
+                    Spacer(Modifier.height(20.dp))
+
+                    PrimaryButton(
+                        text = "Allow camera",
+                        onClick = {
+                            permissionLauncher.launch(
+                                Manifest.permission.CAMERA
+                            )
+                        }
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            TextButton(
+                onClick = {
+                    imagePickerLauncher.launch("image/*")
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.QrCode2,
+                    contentDescription = null
+                )
+
+                Spacer(Modifier.width(8.dp))
+
+                Text("Upload QR image")
+            }
+        }
+
+        if (verificationError != null && verifiedInvite == null) {
+            Text(
+                text = verificationError!!,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+                color = SecondaryText,
+                modifier = Modifier.padding(
+                    horizontal = 4.dp
+                )
+            )
+
+            Spacer(Modifier.height(12.dp))
+        }
+
+        if (verifiedInvite == null) {
+            Text(
+                text = "Only signed Serverless identity QR codes are accepted.",
+                fontSize = 12.sp,
+                color = SecondaryText,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        } else {
+            PrimaryButton(
+                text = "Add contact",
+                onClick = ::addVerifiedContact
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+    }
+
+    verifiedInvite?.let { invite ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {
+                verifiedInvite = null
+                scanEnabled = true
+            },
+            title = {
+                Text(
+                    text = "Identity verified",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "This device has a valid Serverless identity.",
+                        color = SecondaryText
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Text(
+                        text = invite.identityId,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = PrimaryText
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Text(
+                        text = "The identity signature was verified using the public key contained in the QR.",
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        color = SecondaryText
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = ::addVerifiedContact
+                ) {
+                    Text(
+                        text = "Add contact",
+                        color = BrandBlue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        verifiedInvite = null
+                        scanEnabled = true
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Chats                                                                       */
+/* -------------------------------------------------------------------------- */
+
+@Composable
+private fun ChatsScreen(
+    onAdd: () -> Unit,
+    onOpen: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val contactStore = remember { ContactStore(context) }
+
+    val contacts by contactStore.contacts.collectAsState(
+        initial = emptyList()
+    )
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        contentPadding = PaddingValues(24.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        items(
+            items = contacts,
+            key = { it.identityId }
+        ) { contact ->
+
+            ChatRow(
+                contact = contact,
+                summary = ConversationSummary(
+                    lastMessage = null,
+                    unreadCount = 0
+                ),
+                onClick = {
+                    onOpen(contact.identityId)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyChats() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(88.dp)
+                    .clip(CircleShape)
+                    .background(BrandBlue.copy(alpha = 0.10f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    repeat(3) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(BrandBlue)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            Text(
+                text = "No chats yet",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = PrimaryText
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Text(
+                text = "Add someone to start a private conversation.",
+                fontSize = 15.sp,
+                color = SecondaryText,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchField(
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    TextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        singleLine = true,
+        shape = RoundedCornerShape(16.dp),
+        placeholder = {
+            Text(
+                "Search conversations",
+                color = SecondaryText
+            )
+        },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Outlined.Search,
+                contentDescription = null,
+                tint = SecondaryText
+            )
+        },
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = Surface,
+            unfocusedContainerColor = Surface,
+            disabledContainerColor = Surface,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            cursorColor = BrandBlue
+        )
+    )
+}
+
+@Composable
+private fun ChatRow(
+    contact: com.mohnish.serverlessmessenger.data.LocalContact,
+    summary: com.mohnish.serverlessmessenger.data.ConversationSummary,
+    onClick: () -> Unit
+) {
+    val displayName =
+        contact.username.ifBlank { "Unknown" }
+
+    val lastMessage = summary.lastMessage
+
+    val preview = when {
+        lastMessage == null -> "No messages yet"
+        lastMessage.mine -> "You: ${lastMessage.text}"
+        else -> lastMessage.text
+    }
+
+    val time = lastMessage?.let {
+        formatChatListTime(it.timestamp)
+    }.orEmpty()
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Avatar(
+            name = displayName,
+            colorIndex = contact.identityId.hashCode()
+        )
+
+        Spacer(Modifier.width(12.dp))
+
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = "@$displayName",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = PrimaryText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Text(
+                text = preview,
+                fontSize = 14.sp,
+                color = if (summary.unreadCount > 0) {
+                    PrimaryText
+                } else {
+                    SecondaryText
+                },
+                fontWeight = if (summary.unreadCount > 0) {
+                    FontWeight.Medium
+                } else {
+                    FontWeight.Normal
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        Column(
+            horizontalAlignment = Alignment.End
+        ) {
+            if (time.isNotBlank()) {
+                Text(
+                    text = time,
+                    fontSize = 12.sp,
+                    color = if (summary.unreadCount > 0) {
+                        BrandBlue
+                    } else {
+                        SecondaryText
+                    }
+                )
+            }
+
+            if (summary.unreadCount > 0) {
+                Spacer(Modifier.height(5.dp))
+
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(BrandBlue),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (summary.unreadCount > 9) {
+                            "9+"
+                        } else {
+                            summary.unreadCount.toString()
+                        },
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppWhite
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatScreen(
+    identityId: String,
+    peerConnectionManager:
+        com.mohnish.serverlessmessenger.transport.PeerConnectionManager,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+
+    var connectionDiagnostic by remember {
+        mutableStateOf("IDLE — no connection attempt yet")
+    }
+
+    var connectionDiagnosticHistory by remember {
+        mutableStateOf(listOf<String>())
+    }
+
+    var connectionError by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var showConnectionDiagnostics by remember {
+        mutableStateOf(false)
+    }
+
+    DisposableEffect(peerConnectionManager, identityId) {
+        val previousDiagnostic =
+            peerConnectionManager.onDiagnostic
+
+        val previousStateChanged =
+            peerConnectionManager.onStateChanged
+
+        peerConnectionManager.onDiagnostic =
+            { peerId, message ->
+                if (
+                    peerId == identityId ||
+                    peerId == "SIGNALING" ||
+                    peerId == "NOSTR"
+                ) {
+                    connectionDiagnostic = message
+
+                    connectionDiagnosticHistory =
+                        (
+                            connectionDiagnosticHistory +
+                                message
+                            ).takeLast(30)
+
+                    if (message.startsWith("ERROR")) {
+                        connectionError = message
+                    }
+                }
+
+                previousDiagnostic?.invoke(
+                    peerId,
+                    message
+                )
+            }
+
+        peerConnectionManager.onStateChanged =
+            { connectionState ->
+
+                if (connectionState.peerId == identityId) {
+                    connectionDiagnostic =
+                        "TRANSPORT — ${connectionState.state.name}"
+
+                    connectionDiagnosticHistory =
+                        (
+                            connectionDiagnosticHistory +
+                                connectionDiagnostic
+                            ).takeLast(30)
+
+                    if (
+                        connectionState.state ==
+                            com.mohnish.serverlessmessenger.transport.TransportState.FAILED
+                    ) {
+                        connectionError =
+                            "ERROR — WebRTC transport FAILED"
+                    }
+                }
+
+                previousStateChanged?.invoke(
+                    connectionState
+                )
+            }
+
+        onDispose {
+            peerConnectionManager.onDiagnostic =
+                previousDiagnostic
+
+            peerConnectionManager.onStateChanged =
+                previousStateChanged
+        }
+    }
+
+    val contactStore = remember { ContactStore(context) }
+    val messageStore = remember { MessageStore(context) }
+    val messageOutbox =
+        remember { com.mohnish.serverlessmessenger.data.MessageOutbox(context) }
+    val coroutineScope = rememberCoroutineScope()
+
+    val contacts by contactStore.contacts.collectAsState(
+        initial = emptyList()
+    )
+
+    val contact = contacts.firstOrNull {
+        it.identityId == identityId
+    }
+
+    val displayName =
+        contact?.username?.ifBlank { "Unknown" }
+            ?: "Unknown"
+
+    var input by remember { mutableStateOf("") }
+    var showAttachments by remember { mutableStateOf(false) }
+
+    val storedMessages by messageStore
+        .messages(
+            conversationId = identityId,
+            peerSigningPublicKeyBase64 =
+                contact?.publicKeyBase64.orEmpty()
+        )
+        .collectAsState(initial = emptyList())
+
+    val pendingMessages by messageOutbox.messages
+        .collectAsState(initial = emptyList())
+
+    val messages = remember(storedMessages, pendingMessages, identityId) {
+        val stored =
+            storedMessages.map { message ->
+                Message(
+                    id = message.id,
+                    text = message.text,
+                    mine = message.mine,
+                    time = formatMessageTime(message.timestamp)
+                )
+            }
+
+        val pending =
+            pendingMessages
+                .filter { it.peerId == identityId }
+                .map { pending ->
+                    Message(
+                        id = "pending-${pending.id}",
+                        text = pending.text,
+                        mine = true,
+                        time = formatMessageTime(pending.createdAt)
+                    )
+                }
+
+        stored + pending
+    }
+
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(identityId, contact?.identityId) {
+        messageStore.markConversationRead(identityId)
+
+        contact?.let {
+            peerConnectionManager.connectToContact(
+                peerId = it.identityId,
+                signingPublicKeyBase64 = it.publicKeyBase64,
+                agreementPublicKeyBase64 = it.agreementPublicKeyBase64
+            )
+        }
+    }
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(AppWhite)
+    ) {
+        ChatTopBar(
+            name = "@$displayName",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 8.dp,
+                    bottom = 4.dp
+                )
+                .clip(RoundedCornerShape(16.dp))
+                .clickable {
+                    showConnectionDiagnostics = true
+                }
+                .background(
+                    if (connectionError != null) {
+                        Color(0xFFFFF1F1)
+                    } else {
+                        Surface
+                    }
+                )
+                .border(
+                    width = 1.dp,
+                    color = if (connectionError != null) {
+                        Color(0xFFFFC7C7)
+                    } else {
+                        Border
+                    },
+                    shape = RoundedCornerShape(16.dp)
+                )
+                .padding(
+                    horizontal = 14.dp,
+                    vertical = 10.dp
+                )
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (connectionError != null) {
+                                Color(0xFFE53935)
+                            } else {
+                                BrandBlue
+                            }
+                        )
+                )
+
+                Spacer(
+                    modifier = Modifier.width(9.dp)
+                )
+
+                Text(
+                    text = connectionDiagnostic,
+                    modifier = Modifier.weight(1f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (connectionError != null) {
+                        Color(0xFFC62828)
+                    } else {
+                        PrimaryText
+                    },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (connectionDiagnosticHistory.size > 1) {
+                Spacer(
+                    modifier = Modifier.height(6.dp)
+                )
+
+                Text(
+                    text = "Events: ${connectionDiagnosticHistory.size}",
+                    fontSize = 10.sp,
+                    color = SecondaryText
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = 20.dp,
+                bottom = 16.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(
+                items = messages,
+                key = { it.id }
+            ) { message ->
+                MessageBubble(message)
+            }
+        }
+
+        ChatInput(
+            value = input,
+            onValueChange = { input = it },
+            onAttach = {
+                showAttachments = true
+            },
+            onSend = {
+                val messageText = input.trim()
+
+                if (messageText.isNotEmpty()) {
+                    coroutineScope.launch {
+                        if (contact != null) {
+                            val sent =
+                                peerConnectionManager.send(
+                                    peerId = contact.identityId,
+                                    text = messageText
+                                )
+
+                            if (!sent) {
+                                com.mohnish.serverlessmessenger.data.MessageOutbox(
+                                    context
+                                ).add(
+                                    peerId = contact.identityId,
+                                    text = messageText
+                                )
+
+                                peerConnectionManager.connectToContact(
+                                    peerId = contact.identityId,
+                                    signingPublicKeyBase64 =
+                                        contact.publicKeyBase64,
+                                    agreementPublicKeyBase64 =
+                                        contact.agreementPublicKeyBase64
+                                )
+                            }
+                        }
+                    }
+
+                    input = ""
+                }
+            }
+        )
+    }
+
+    if (showAttachments) {
+        AttachmentSheet(
+            onDismiss = {
+                showAttachments = false
+            }
+        )
+    }
+
+    if (showConnectionDiagnostics) {
+        AlertDialog(
+            onDismissRequest = {
+                showConnectionDiagnostics = false
+            },
+            title = {
+                Text(
+                    text = "Connection diagnostics",
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                ) {
+                    Text(
+                        text = connectionDiagnostic,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (connectionError != null) {
+                            Color(0xFFC62828)
+                        } else {
+                            PrimaryText
+                        }
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp)
+                    ) {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement =
+                                Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(
+                                items =
+                                    connectionDiagnosticHistory
+                            ) { event ->
+                                Text(
+                                    text = event,
+                                    fontSize = 11.sp,
+                                    color = if (
+                                        event.startsWith("ERROR")
+                                    ) {
+                                        Color(0xFFC62828)
+                                    } else {
+                                        SecondaryText
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showConnectionDiagnostics = false
+                    }
+                ) {
+                    Text("Close")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        val diagnosticsText =
+                            connectionDiagnosticHistory.joinToString(
+                                separator = "\n"
+                            )
+
+                        val clipboard =
+                            context.getSystemService(
+                                android.content.Context.CLIPBOARD_SERVICE
+                            ) as android.content.ClipboardManager
+
+                        clipboard.setPrimaryClip(
+                            android.content.ClipData.newPlainText(
+                                "Connection diagnostics",
+                                diagnosticsText
+                            )
+                        )
+                    }
+                ) {
+                    Text(
+                        text = "Copy diagnostics",
+                        color = BrandBlue
+                    )
+                }
+            }
+        )
+    }
+}
+
+private fun formatChatListTime(timestamp: Long): String {
+    if (timestamp <= 0L) return ""
+
+    val date = java.util.Date(timestamp)
+    val now = java.util.Date()
+
+    val sameDay =
+        java.text.SimpleDateFormat(
+            "yyyyMMdd",
+            java.util.Locale.getDefault()
+        ).format(date) ==
+        java.text.SimpleDateFormat(
+            "yyyyMMdd",
+            java.util.Locale.getDefault()
+        ).format(now)
+
+    return if (sameDay) {
+        java.text.SimpleDateFormat(
+            "HH:mm",
+            java.util.Locale.getDefault()
+        ).format(date)
+    } else {
+        java.text.SimpleDateFormat(
+            "dd/MM",
+            java.util.Locale.getDefault()
+        ).format(date)
+    }
+}
+
+private fun formatMessageTime(timestamp: Long): String {
+    if (timestamp <= 0L) return ""
+
+    return java.text.SimpleDateFormat(
+        "HH:mm",
+        java.util.Locale.getDefault()
+    ).format(java.util.Date(timestamp))
+}
+
+@Composable
+private fun ChatTopBar(
+    name: String,
+    onBack: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(BrandBlue)
+            .padding(
+                horizontal = 12.dp,
+                vertical = 12.dp
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(
+                imageVector = Icons.Outlined.ArrowBack,
+                contentDescription = "Back",
+                tint = Color.White
+            )
+        }
+
+        Avatar(
+            name = name,
+            colorIndex = 0,
+            size = 40.dp
+        )
+
+        Spacer(Modifier.width(12.dp))
+
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = name,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White
+            )
+
+            Text(
+                text = "Direct connection",
+                fontSize = 12.sp,
+                color = Color.White.copy(alpha = 0.82f)
+            )
+        }
+
+        IconButton(onClick = {}) {
+            Icon(
+                imageVector = Icons.Outlined.Call,
+                contentDescription = "Call",
+                tint = Color.White
+            )
+        }
+
+        IconButton(onClick = {}) {
+            Icon(
+                imageVector = Icons.Outlined.Videocam,
+                contentDescription = "Video",
+                tint = Color.White
+            )
+        }
+
+        IconButton(onClick = {}) {
+            Icon(
+                imageVector = Icons.Outlined.MoreVert,
+                contentDescription = "More",
+                tint = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(
+    message: Message
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (message.mine) {
+            Arrangement.End
+        } else {
+            Arrangement.Start
+        }
+    ) {
+        Column(
+            horizontalAlignment = if (message.mine) {
+                Alignment.End
+            } else {
+                Alignment.Start
+            }
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(
+                        if (message.mine) {
+                            RoundedCornerShape(
+                                topStart = 16.dp,
+                                topEnd = 16.dp,
+                                bottomStart = 16.dp,
+                                bottomEnd = 4.dp
+                            )
+                        } else {
+                            RoundedCornerShape(
+                                topStart = 16.dp,
+                                topEnd = 16.dp,
+                                bottomStart = 4.dp,
+                                bottomEnd = 16.dp
+                            )
+                        }
+                    )
+                    .background(
+                        if (message.mine) BrandBlue else Surface
+                    )
+                    .padding(
+                        horizontal = 16.dp,
+                        vertical = 11.dp
+                    )
+            ) {
+                Text(
+                    text = message.text,
+                    fontSize = 16.sp,
+                    lineHeight = 22.sp,
+                    color = if (message.mine) {
+                        Color.White
+                    } else {
+                        PrimaryText
+                    }
+                )
+            }
+
+            Spacer(Modifier.height(3.dp))
+
+            Text(
+                text = message.time,
+                fontSize = 10.sp,
+                color = SecondaryText
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onAttach: () -> Unit,
+    onSend: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .padding(
+                horizontal = 12.dp,
+                vertical = 10.dp
+            ),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(CircleShape)
+                .background(Surface)
+                .border(1.dp, Border, CircleShape)
+                .padding(start = 6.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onAttach) {
+                Icon(
+                    imageVector = Icons.Outlined.AttachFile,
+                    contentDescription = "Attach",
+                    tint = SecondaryText
+                )
+            }
+
+            TextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.weight(1f),
+                singleLine = false,
+                maxLines = 4,
+                placeholder = {
+                    Text(
+                        "Message",
+                        color = SecondaryText
+                    )
+                },
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    cursorColor = BrandBlue
+                )
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(
+                    if (value.isBlank()) Border else BrandBlue
+                )
+                .clickable(enabled = value.isNotBlank(), onClick = onSend),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Send,
+                contentDescription = "Send",
+                tint = if (value.isBlank()) SecondaryText else Color.White
+            )
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Attachment sheet                                                            */
+/* -------------------------------------------------------------------------- */
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AttachmentSheet(
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        shape = RoundedCornerShape(
+            topStart = 24.dp,
+            topEnd = 24.dp
+        ),
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(vertical = 12.dp)
+                    .size(width = 40.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(Border)
+            )
+        }
+    ) {
+        Column(
+            modifier = Modifier.padding(
+                start = 24.dp,
+                end = 24.dp,
+                bottom = 32.dp
+            )
+        ) {
+            Text(
+                text = "Share",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = PrimaryText
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                AttachmentAction("Photo", BrandBlue)
+                AttachmentAction("Camera", Color(0xFF8E6BFF))
+                AttachmentAction("File", Color(0xFFFF9F43))
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                AttachmentAction("Contact", Color(0xFF35B77A))
+                AttachmentAction("Location", Color(0xFFFF647C))
+                AttachmentAction("More", Color(0xFF607D8B))
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentAction(
+    label: String,
+    color: Color
+) {
+    Column(
+        modifier = Modifier.width(88.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(color),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Add,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(26.dp)
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            color = SecondaryText
+        )
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shared components                                                           */
+/* -------------------------------------------------------------------------- */
+
+@Composable
+private fun AppTopBar(
+    title: String,
+    onBack: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(64.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(
+                imageVector = Icons.Outlined.ArrowBack,
+                contentDescription = "Back",
+                tint = PrimaryText
+            )
+        }
+
+        Text(
+            text = title,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = PrimaryText
+        )
+    }
+}
+
+@Composable
+private fun PrimaryButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(CircleShape)
+            .background(BrandBlue)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+    }
+}
+
+@Composable
+private fun SecondaryAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(CircleShape)
+            .border(1.dp, Border, CircleShape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = BrandBlue
+        )
+
+        Spacer(Modifier.width(12.dp))
+
+        Text(
+            text = text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = PrimaryText,
+            modifier = Modifier.weight(1f)
+        )
+
+        Icon(
+            imageVector = Icons.Outlined.KeyboardArrowRight,
+            contentDescription = null,
+            tint = SecondaryText
+        )
+    }
+}
+
+@Composable
+private fun Avatar(
+    name: String,
+    colorIndex: Int,
+    size: androidx.compose.ui.unit.Dp = 52.dp
+) {
+    val backgrounds = listOf(
+        BrandBlue,
+        Color(0xFF7B61FF),
+        Color(0xFF18A875)
+    )
+
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(backgrounds[Math.floorMod(colorIndex, backgrounds.size)]),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = name.take(1).uppercase(),
+            fontSize = if (size < 48.dp) 16.sp else 19.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+    }
+}
