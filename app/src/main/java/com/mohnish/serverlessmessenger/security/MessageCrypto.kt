@@ -27,7 +27,8 @@ data class DecryptedMessage(
     val senderIdentityId: String,
     val recipientIdentityId: String,
     val timestamp: Long,
-    val text: String
+    val text: String,
+    val envelope: MessageEnvelope
 )
 
 object MessageCrypto {
@@ -39,6 +40,21 @@ object MessageCrypto {
     fun encrypt(
         context: android.content.Context,
         text: String,
+        recipientIdentityId: String,
+        recipientAgreementPublicKeyBase64: String
+    ): EncryptedMessagePacket {
+        return encrypt(
+            context = context,
+            envelope = MessageEnvelope.text(text),
+            recipientIdentityId = recipientIdentityId,
+            recipientAgreementPublicKeyBase64 =
+                recipientAgreementPublicKeyBase64
+        )
+    }
+
+    fun encrypt(
+        context: android.content.Context,
+        envelope: MessageEnvelope,
         recipientIdentityId: String,
         recipientAgreementPublicKeyBase64: String
     ): EncryptedMessagePacket {
@@ -77,7 +93,9 @@ object MessageCrypto {
 
         val ciphertext =
             cipher.doFinal(
-                text.toByteArray(StandardCharsets.UTF_8)
+                envelope
+                    .toJson()
+                    .toByteArray(StandardCharsets.UTF_8)
             )
 
         val id =
@@ -190,6 +208,26 @@ object MessageCrypto {
         val plaintext =
             cipher.doFinal(ciphertext)
 
+        val plaintextText =
+            String(
+                plaintext,
+                StandardCharsets.UTF_8
+            )
+
+        /*
+         * New messages contain a versioned JSON envelope.
+         *
+         * If parsing fails, this is an older v0.1 plaintext message.
+         * Keeping that fallback means existing conversations remain
+         * readable after upgrading the app.
+         */
+        val envelope =
+            MessageEnvelope.fromJson(
+                plaintextText
+            ) ?: MessageEnvelope.text(
+                plaintextText
+            )
+
         return DecryptedMessage(
             id = packet.id,
             senderIdentityId =
@@ -199,10 +237,9 @@ object MessageCrypto {
             timestamp =
                 packet.timestamp,
             text =
-                String(
-                    plaintext,
-                    StandardCharsets.UTF_8
-                )
+                envelope.text,
+            envelope =
+                envelope
         )
     }
 

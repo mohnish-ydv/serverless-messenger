@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.mohnish.serverlessmessenger.security.EncryptedMessagePacket
 import com.mohnish.serverlessmessenger.security.MessageCrypto
+import com.mohnish.serverlessmessenger.security.MessageEnvelope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
@@ -21,7 +22,11 @@ data class LocalMessage(
     val text: String,
     val mine: Boolean,
     val timestamp: Long,
-    val read: Boolean
+    val read: Boolean,
+    val type: String = MessageEnvelope.TYPE_TEXT,
+    val replyToMessageId: String? = null,
+    val targetMessageId: String? = null,
+    val reaction: String? = null
 )
 
 data class ConversationSummary(
@@ -33,7 +38,8 @@ private data class StoredMessage(
     val packet: EncryptedMessagePacket,
     val mine: Boolean,
     val read: Boolean,
-    val localText: String? = null
+    val localText: String? = null,
+    val localEnvelope: MessageEnvelope? = null
 )
 
 class MessageStore(
@@ -89,17 +95,34 @@ class MessageStore(
                                 )
                             }
 
+                        val envelope =
+                            message.localEnvelope
+                                ?: decrypted?.envelope
+                                ?: MessageEnvelope.text(
+                                    message.localText.orEmpty()
+                                )
+
+                        val displayText =
+                            message.localText
+                                ?: decrypted?.text
+                                ?: envelope.text
+
                         LocalMessage(
                             id = message.packet.id,
                             conversationId =
                                 conversationId,
-                            text =
-                                message.localText
-                                    ?: decrypted!!.text,
+                            text = displayText,
                             mine = message.mine,
                             timestamp =
                                 message.packet.timestamp,
-                            read = message.read
+                            read = message.read,
+                            type = envelope.type,
+                            replyToMessageId =
+                                envelope.replyToMessageId,
+                            targetMessageId =
+                                envelope.targetMessageId,
+                            reaction =
+                                envelope.reaction
                         )
                     }
 
@@ -139,7 +162,8 @@ class MessageStore(
         conversationId: String,
         packet: EncryptedMessagePacket,
         mine: Boolean,
-        localText: String? = null
+        localText: String? = null,
+        localEnvelope: MessageEnvelope? = null
     ) {
 
         context.messageDataStore.edit { preferences ->
@@ -167,7 +191,16 @@ class MessageStore(
                     packet = packet,
                     mine = mine,
                     read = mine,
-                    localText = if (mine) localText else null
+                    localText = if (mine) localText else null,
+                    localEnvelope =
+                        if (mine) {
+                            localEnvelope
+                                ?: localText?.let {
+                                    MessageEnvelope.text(it)
+                                }
+                        } else {
+                            null
+                        }
                 )
 
             preferences[key] =
@@ -289,6 +322,34 @@ class MessageStore(
                         "read",
                         message.read
                     )
+
+                    message.localEnvelope?.let { envelope ->
+                        put(
+                            "local_type",
+                            envelope.type
+                        )
+
+                        envelope.replyToMessageId?.let {
+                            put(
+                                "local_reply_to",
+                                it
+                            )
+                        }
+
+                        envelope.targetMessageId?.let {
+                            put(
+                                "local_target",
+                                it
+                            )
+                        }
+
+                        envelope.reaction?.let {
+                            put(
+                                "local_reaction",
+                                it
+                            )
+                        }
+                    }
                 }
             )
         }
@@ -363,6 +424,56 @@ class MessageStore(
                                 )
                         )
 
+                    val localText =
+                        item.optString(
+                            "local_text",
+                            null
+                        ).takeIf {
+                            !it.isNullOrBlank()
+                        }
+
+                    val localType =
+                        item.optString(
+                            "local_type",
+                            null
+                        ).takeIf {
+                            !it.isNullOrBlank()
+                        }
+
+                    val localEnvelope =
+                        if (localType != null) {
+                            MessageEnvelope(
+                                version =
+                                    MessageEnvelope.CURRENT_VERSION,
+                                type = localType,
+                                text =
+                                    localText.orEmpty(),
+                                replyToMessageId =
+                                    item.optString(
+                                        "local_reply_to",
+                                        null
+                                    ).takeIf {
+                                        !it.isNullOrBlank()
+                                    },
+                                targetMessageId =
+                                    item.optString(
+                                        "local_target",
+                                        null
+                                    ).takeIf {
+                                        !it.isNullOrBlank()
+                                    },
+                                reaction =
+                                    item.optString(
+                                        "local_reaction",
+                                        null
+                                    ).takeIf {
+                                        !it.isNullOrBlank()
+                                    }
+                            )
+                        } else {
+                            null
+                        }
+
                     add(
                         StoredMessage(
                             packet = packet,
@@ -376,14 +487,8 @@ class MessageStore(
                                     "read",
                                     false
                                 ),
-                            localText =
-                                item.optString(
-                                    "local_text",
-                                    null
-                                )
-                                    .takeIf {
-                                        !it.isNullOrBlank()
-                                    }
+                            localText = localText,
+                            localEnvelope = localEnvelope
                         )
                     )
                 }
