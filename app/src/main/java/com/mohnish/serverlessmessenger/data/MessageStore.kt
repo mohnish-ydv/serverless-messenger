@@ -32,7 +32,8 @@ data class ConversationSummary(
 private data class StoredMessage(
     val packet: EncryptedMessagePacket,
     val mine: Boolean,
-    val read: Boolean
+    val read: Boolean,
+    val localText: String? = null
 )
 
 class MessageStore(
@@ -79,19 +80,25 @@ class MessageStore(
                     } else {
 
                         val decrypted =
-                            MessageCrypto.decrypt(
-                                context = context,
-                                packet = message.packet
-                            )
+                            if (message.mine && message.localText != null) {
+                                null
+                            } else {
+                                MessageCrypto.decrypt(
+                                    context = context,
+                                    packet = message.packet
+                                )
+                            }
 
                         LocalMessage(
-                            id = decrypted.id,
+                            id = message.packet.id,
                             conversationId =
                                 conversationId,
-                            text = decrypted.text,
+                            text =
+                                message.localText
+                                    ?: decrypted!!.text,
                             mine = message.mine,
                             timestamp =
-                                decrypted.timestamp,
+                                message.packet.timestamp,
                             read = message.read
                         )
                     }
@@ -131,7 +138,8 @@ class MessageStore(
     suspend fun addEncryptedMessage(
         conversationId: String,
         packet: EncryptedMessagePacket,
-        mine: Boolean
+        mine: Boolean,
+        localText: String? = null
     ) {
 
         context.messageDataStore.edit { preferences ->
@@ -158,7 +166,8 @@ class MessageStore(
                 StoredMessage(
                     packet = packet,
                     mine = mine,
-                    read = mine
+                    read = mine,
+                    localText = if (mine) localText else null
                 )
 
             preferences[key] =
@@ -269,6 +278,13 @@ class MessageStore(
                         message.mine
                     )
 
+                    message.localText?.let {
+                        put(
+                            "local_text",
+                            it
+                        )
+                    }
+
                     put(
                         "read",
                         message.read
@@ -359,7 +375,15 @@ class MessageStore(
                                 item.optBoolean(
                                     "read",
                                     false
+                                ),
+                            localText =
+                                item.optString(
+                                    "local_text",
+                                    null
                                 )
+                                    .takeIf {
+                                        !it.isNullOrBlank()
+                                    }
                         )
                     )
                 }

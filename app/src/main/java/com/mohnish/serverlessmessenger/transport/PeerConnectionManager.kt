@@ -335,7 +335,9 @@ class PeerConnectionManager(
                 packet =
                     packet,
                 mine =
-                    true
+                    true,
+                localText =
+                    text
             )
         }
 
@@ -411,7 +413,9 @@ class PeerConnectionManager(
                     packet =
                         packet,
                     mine =
-                        true
+                        true,
+                    localText =
+                        item.text
                 )
 
                 outbox.remove(
