@@ -118,7 +118,8 @@ private data class Message(
     val id: String,
     val text: String,
     val mine: Boolean,
-    val time: String
+    val time: String,
+    val timestamp: Long
 )
 
 @Composable
@@ -1632,7 +1633,8 @@ private fun ChatScreen(
                     id = message.id,
                     text = message.text,
                     mine = message.mine,
-                    time = formatMessageTime(message.timestamp)
+                    time = formatMessageTime(message.timestamp),
+                    timestamp = message.timestamp
                 )
             }
 
@@ -1644,11 +1646,14 @@ private fun ChatScreen(
                         id = "pending-${pending.id}",
                         text = pending.text,
                         mine = true,
-                        time = formatMessageTime(pending.createdAt)
+                        time = formatMessageTime(pending.createdAt),
+                        timestamp = pending.createdAt
                     )
                 }
 
-        stored + pending
+        (stored + pending).sortedBy { message ->
+            message.timestamp
+        }
     }
 
     val listState = rememberLazyListState()
