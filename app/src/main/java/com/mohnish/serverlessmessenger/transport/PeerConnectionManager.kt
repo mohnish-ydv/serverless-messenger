@@ -6,6 +6,7 @@ import com.mohnish.serverlessmessenger.data.MessageOutbox
 import com.mohnish.serverlessmessenger.data.MessageStore
 import com.mohnish.serverlessmessenger.security.EncryptedMessagePacket
 import com.mohnish.serverlessmessenger.security.MessageCrypto
+import com.mohnish.serverlessmessenger.security.MessageEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -271,6 +272,20 @@ class PeerConnectionManager(
         peerId: String,
         text: String
     ): Boolean {
+        if (text.isBlank()) {
+            return false
+        }
+
+        return send(
+            peerId = peerId,
+            envelope = MessageEnvelope.text(text)
+        )
+    }
+
+    fun send(
+        peerId: String,
+        envelope: MessageEnvelope
+    ): Boolean {
 
         val session =
             synchronized(
@@ -287,7 +302,8 @@ class PeerConnectionManager(
                 }
 
         if (
-            text.isBlank()
+            envelope.type == MessageEnvelope.TYPE_TEXT &&
+            envelope.text.isBlank()
         ) {
             return false
         }
@@ -297,8 +313,8 @@ class PeerConnectionManager(
                 MessageCrypto.encrypt(
                     context =
                         appContext,
-                    text =
-                        text,
+                    envelope =
+                        envelope,
                     recipientIdentityId =
                         session.peerId,
                     recipientAgreementPublicKeyBase64 =
@@ -337,13 +353,15 @@ class PeerConnectionManager(
                 mine =
                     true,
                 localText =
-                    text
+                    envelope.text,
+                localEnvelope =
+                    envelope
             )
         }
 
         emitDiagnostic(
             peerId,
-            "MESSAGE PUBLISHED — packet=${packet.id}"
+            "MESSAGE PUBLISHED — packet=${packet.id} type=${envelope.type}"
         )
 
         onStateChanged?.invoke(
@@ -415,7 +433,9 @@ class PeerConnectionManager(
                     mine =
                         true,
                     localText =
-                        item.text
+                        item.envelope.text,
+                    localEnvelope =
+                        item.envelope
                 )
 
                 outbox.remove(
@@ -476,7 +496,11 @@ class PeerConnectionManager(
                 packet =
                     packet,
                 mine =
-                    false
+                    false,
+                localText =
+                    decrypted.text,
+                localEnvelope =
+                    decrypted.envelope
             )
 
             onMessageReceived?.invoke(

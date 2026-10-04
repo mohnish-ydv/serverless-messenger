@@ -25,6 +25,7 @@ data class LocalMessage(
     val read: Boolean,
     val type: String = MessageEnvelope.TYPE_TEXT,
     val replyToMessageId: String? = null,
+    val replyPreviewText: String? = null,
     val targetMessageId: String? = null,
     val reaction: String? = null
 )
@@ -119,6 +120,8 @@ class MessageStore(
                             type = envelope.type,
                             replyToMessageId =
                                 envelope.replyToMessageId,
+                            replyPreviewText =
+                                envelope.replyPreviewText,
                             targetMessageId =
                                 envelope.targetMessageId,
                             reaction =
@@ -193,14 +196,10 @@ class MessageStore(
                     read = mine,
                     localText = if (mine) localText else null,
                     localEnvelope =
-                        if (mine) {
-                            localEnvelope
-                                ?: localText?.let {
-                                    MessageEnvelope.text(it)
-                                }
-                        } else {
-                            null
-                        }
+                        localEnvelope
+                            ?: localText?.let {
+                                MessageEnvelope.text(it)
+                            }
                 )
 
             preferences[key] =
@@ -336,6 +335,14 @@ class MessageStore(
                             )
                         }
 
+                          envelope.replyPreviewText?.let {
+                              put(
+                                  "local_reply_preview",
+                                  it
+                              )
+                          }
+
+
                         envelope.targetMessageId?.let {
                             put(
                                 "local_target",
@@ -451,6 +458,13 @@ class MessageStore(
                                 replyToMessageId =
                                     item.optString(
                                         "local_reply_to",
+                                        null
+                                    ).takeIf {
+                                        !it.isNullOrBlank()
+                                    },
+                                replyPreviewText =
+                                    item.optString(
+                                        "local_reply_preview",
                                         null
                                     ).takeIf {
                                         !it.isNullOrBlank()

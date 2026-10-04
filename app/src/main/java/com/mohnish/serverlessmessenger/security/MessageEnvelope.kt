@@ -13,6 +13,7 @@ data class MessageEnvelope(
     val type: String = TYPE_TEXT,
     val text: String = "",
     val replyToMessageId: String? = null,
+    val replyPreviewText: String? = null,
     val targetMessageId: String? = null,
     val reaction: String? = null
 ) {
@@ -24,6 +25,10 @@ data class MessageEnvelope(
 
             replyToMessageId?.let {
                 put("replyTo", it)
+            }
+
+            replyPreviewText?.let {
+                put("replyPreview", it)
             }
 
             targetMessageId?.let {
@@ -75,6 +80,11 @@ data class MessageEnvelope(
                                 "replyTo",
                                 null
                             ),
+                          replyPreviewText =
+                              json.optString(
+                                  "replyPreview",
+                                  null
+                              ),
                         targetMessageId =
                             json.optString(
                                 "target",

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import com.mohnish.serverlessmessenger.security.MessageEnvelope
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,7 +21,8 @@ data class PendingMessage(
     val id: String,
     val peerId: String,
     val text: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val envelope: MessageEnvelope = MessageEnvelope.text(text)
 )
 
 class MessageOutbox(
@@ -40,7 +42,8 @@ class MessageOutbox(
 
     suspend fun add(
         peerId: String,
-        text: String
+        text: String,
+        envelope: MessageEnvelope = MessageEnvelope.text(text)
     ): PendingMessage =
         mutex.withLock {
             val current =
@@ -51,7 +54,8 @@ class MessageOutbox(
                     id = java.util.UUID.randomUUID().toString(),
                     peerId = peerId,
                     text = text,
-                    createdAt = System.currentTimeMillis()
+                    createdAt = System.currentTimeMillis(),
+                    envelope = envelope
                 )
 
             save(
@@ -103,6 +107,7 @@ class MessageOutbox(
                     put("peerId", item.peerId)
                     put("text", item.text)
                     put("createdAt", item.createdAt)
+                    put("envelope", item.envelope.toJson())
                 }
             )
         }
@@ -125,13 +130,19 @@ class MessageOutbox(
                     val item =
                         array.getJSONObject(index)
 
+                    val text = item.getString("text")
+                    val envelope =
+                        item.optString("envelope", null)?.let {
+                            MessageEnvelope.fromJson(it)
+                        } ?: MessageEnvelope.text(text)
+
                     add(
                         PendingMessage(
                             id = item.getString("id"),
                             peerId = item.getString("peerId"),
-                            text = item.getString("text"),
-                            createdAt =
-                                item.getLong("createdAt")
+                            text = text,
+                            createdAt = item.getLong("createdAt"),
+                            envelope = envelope
                         )
                     )
                 }
