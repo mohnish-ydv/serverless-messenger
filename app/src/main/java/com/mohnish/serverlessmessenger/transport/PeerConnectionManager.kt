@@ -402,8 +402,8 @@ class PeerConnectionManager(
                         MessageCrypto.encrypt(
                             context =
                                 appContext,
-                            text =
-                                item.text,
+                            envelope =
+                                item.envelope,
                             recipientIdentityId =
                                 session.peerId,
                             recipientAgreementPublicKeyBase64 =
