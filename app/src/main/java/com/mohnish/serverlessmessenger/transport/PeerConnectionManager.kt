@@ -445,6 +445,80 @@ class PeerConnectionManager(
         }
     }
 
+    fun sendEdit(
+        peerId: String,
+        messageId: String,
+        newText: String
+    ): Boolean {
+        if (newText.isBlank()) {
+            return false
+        }
+
+        val sent =
+            publishControlEnvelope(
+                peerId = peerId,
+                envelope =
+                    MessageEnvelope(
+                        type =
+                            MessageEnvelope.TYPE_EDIT,
+                        text =
+                            newText,
+                        targetMessageId =
+                            messageId
+                    )
+            )
+
+        if (sent) {
+            scope.launch {
+                messageStore.editMessage(
+                    conversationId = peerId,
+                    messageId = messageId,
+                    newText = newText
+                )
+            }
+
+            emitDiagnostic(
+                peerId,
+                "EDIT PUBLISHED — target=$messageId"
+            )
+        }
+
+        return sent
+    }
+
+    fun sendDelete(
+        peerId: String,
+        messageId: String
+    ): Boolean {
+        val sent =
+            publishControlEnvelope(
+                peerId = peerId,
+                envelope =
+                    MessageEnvelope(
+                        type =
+                            MessageEnvelope.TYPE_DELETE,
+                        targetMessageId =
+                            messageId
+                    )
+            )
+
+        if (sent) {
+            scope.launch {
+                messageStore.deleteMessage(
+                    conversationId = peerId,
+                    messageId = messageId
+                )
+            }
+
+            emitDiagnostic(
+                peerId,
+                "DELETE PUBLISHED — target=$messageId"
+            )
+        }
+
+        return sent
+    }
+
     private fun drainOutbox(
         session: PeerSession
     ) {
@@ -560,6 +634,59 @@ class PeerConnectionManager(
         val envelope = decrypted.envelope
 
         when (envelope.type) {
+
+            MessageEnvelope.TYPE_EDIT -> {
+                val targetMessageId =
+                    envelope.targetMessageId
+
+                if (!targetMessageId.isNullOrBlank()) {
+                    scope.launch {
+                        messageStore.applyRemoteEdit(
+                            conversationId = peerId,
+                            messageId = targetMessageId,
+                            newText = envelope.text
+                        )
+
+                        emitDiagnostic(
+                            peerId,
+                            "REMOTE EDIT APPLIED — target=$targetMessageId"
+                        )
+
+                        onMessageReceived?.invoke(
+                            peerId,
+                            envelope.text
+                        )
+                    }
+                }
+
+                return
+            }
+
+            MessageEnvelope.TYPE_DELETE -> {
+                val targetMessageId =
+                    envelope.targetMessageId
+
+                if (!targetMessageId.isNullOrBlank()) {
+                    scope.launch {
+                        messageStore.applyRemoteDelete(
+                            conversationId = peerId,
+                            messageId = targetMessageId
+                        )
+
+                        emitDiagnostic(
+                            peerId,
+                            "REMOTE DELETE APPLIED — target=$targetMessageId"
+                        )
+
+                        onMessageReceived?.invoke(
+                            peerId,
+                            "This message was deleted"
+                        )
+                    }
+                }
+
+                return
+            }
 
             MessageEnvelope.TYPE_DELIVERY_ACK -> {
                 val targetMessageId =

@@ -34,7 +34,9 @@ data class LocalMessage(
     val replyToMessageId: String? = null,
     val replyPreviewText: String? = null,
     val targetMessageId: String? = null,
-    val reaction: String? = null
+    val reaction: String? = null,
+    val edited: Boolean = false,
+    val deleted: Boolean = false
 )
 
 data class ConversationSummary(
@@ -48,7 +50,9 @@ private data class StoredMessage(
     val read: Boolean,
     val deliveryState: String = MessageDeliveryState.SENT,
     val localText: String? = null,
-    val localEnvelope: MessageEnvelope? = null
+    val localEnvelope: MessageEnvelope? = null,
+    val edited: Boolean = false,
+    val deleted: Boolean = false
 )
 
 class MessageStore(
@@ -134,7 +138,9 @@ class MessageStore(
                             targetMessageId =
                                 envelope.targetMessageId,
                             reaction =
-                                envelope.reaction
+                                envelope.reaction,
+                            edited = message.edited,
+                            deleted = message.deleted
                         )
                     }
 
@@ -300,6 +306,122 @@ class MessageStore(
         )
     }
 
+    suspend fun editMessage(
+        conversationId: String,
+        messageId: String,
+        newText: String
+    ) {
+        if (newText.isBlank()) {
+            return
+        }
+
+        context.messageDataStore.edit { preferences ->
+            val key = messagesKey(conversationId)
+            val existing = decode(preferences[key] ?: "[]")
+
+            val updated =
+                existing.map { message ->
+                    if (
+                        message.packet.id == messageId &&
+                        message.mine &&
+                        !message.deleted
+                    ) {
+                        message.copy(
+                            localText = newText,
+                            edited = true
+                        )
+                    } else {
+                        message
+                    }
+                }
+
+            preferences[key] = encode(updated)
+        }
+    }
+
+    suspend fun deleteMessage(
+        conversationId: String,
+        messageId: String
+    ) {
+        context.messageDataStore.edit { preferences ->
+            val key = messagesKey(conversationId)
+            val existing = decode(preferences[key] ?: "[]")
+
+            val updated =
+                existing.map { message ->
+                    if (
+                        message.packet.id == messageId &&
+                        message.mine
+                    ) {
+                        message.copy(
+                            localText = "This message was deleted",
+                            deleted = true
+                        )
+                    } else {
+                        message
+                    }
+                }
+
+            preferences[key] = encode(updated)
+        }
+    }
+
+    suspend fun applyRemoteEdit(
+        conversationId: String,
+        messageId: String,
+        newText: String
+    ) {
+        if (newText.isBlank()) {
+            return
+        }
+
+        context.messageDataStore.edit { preferences ->
+            val key = messagesKey(conversationId)
+            val existing = decode(preferences[key] ?: "[]")
+
+            val updated =
+                existing.map { message ->
+                    if (
+                        message.packet.id == messageId &&
+                        !message.deleted
+                    ) {
+                        message.copy(
+                            localText = newText,
+                            edited = true
+                        )
+                    } else {
+                        message
+                    }
+                }
+
+            preferences[key] = encode(updated)
+        }
+    }
+
+    suspend fun applyRemoteDelete(
+        conversationId: String,
+        messageId: String
+    ) {
+        context.messageDataStore.edit { preferences ->
+            val key = messagesKey(conversationId)
+            val existing = decode(preferences[key] ?: "[]")
+
+            val updated =
+                existing.map { message ->
+                    if (message.packet.id == messageId) {
+                        message.copy(
+                            localText = "This message was deleted",
+                            deleted = true
+                        )
+                    } else {
+                        message
+                    }
+                }
+
+            preferences[key] = encode(updated)
+        }
+    }
+
     private suspend fun updateDeliveryState(
         conversationId: String,
         messageId: String,
@@ -418,6 +540,16 @@ class MessageStore(
                     put(
                         "delivery_state",
                         message.deliveryState
+                    )
+
+                    put(
+                        "edited",
+                        message.edited
+                    )
+
+                    put(
+                        "deleted",
+                        message.deleted
                     )
 
                     message.localEnvelope?.let { envelope ->
@@ -617,6 +749,18 @@ class MessageStore(
                                 MessageDeliveryState.DELIVERED
                         }
 
+                    val edited =
+                        item.optBoolean(
+                            "edited",
+                            false
+                        )
+
+                    val deleted =
+                        item.optBoolean(
+                            "deleted",
+                            false
+                        )
+
                     add(
                         StoredMessage(
                             packet = packet,
@@ -627,7 +771,9 @@ class MessageStore(
                                         MessageDeliveryState.READ,
                             deliveryState = deliveryState,
                             localText = localText,
-                            localEnvelope = localEnvelope
+                            localEnvelope = localEnvelope,
+                            edited = edited,
+                            deleted = deleted
                         )
                     )
                 }
