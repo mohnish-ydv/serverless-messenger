@@ -16,6 +16,12 @@ private val Context.messageDataStore by preferencesDataStore(
     name = "serverless_messages"
 )
 
+object MessageDeliveryState {
+    const val SENT = "sent"
+    const val DELIVERED = "delivered"
+    const val READ = "read"
+}
+
 data class LocalMessage(
     val id: String,
     val conversationId: String,
@@ -23,6 +29,7 @@ data class LocalMessage(
     val mine: Boolean,
     val timestamp: Long,
     val read: Boolean,
+    val deliveryState: String = MessageDeliveryState.SENT,
     val type: String = MessageEnvelope.TYPE_TEXT,
     val replyToMessageId: String? = null,
     val replyPreviewText: String? = null,
@@ -39,6 +46,7 @@ private data class StoredMessage(
     val packet: EncryptedMessagePacket,
     val mine: Boolean,
     val read: Boolean,
+    val deliveryState: String = MessageDeliveryState.SENT,
     val localText: String? = null,
     val localEnvelope: MessageEnvelope? = null
 )
@@ -117,6 +125,7 @@ class MessageStore(
                             timestamp =
                                 message.packet.timestamp,
                             read = message.read,
+                            deliveryState = message.deliveryState,
                             type = envelope.type,
                             replyToMessageId =
                                 envelope.replyToMessageId,
@@ -194,6 +203,12 @@ class MessageStore(
                     packet = packet,
                     mine = mine,
                     read = mine,
+                    deliveryState =
+                        if (mine) {
+                            MessageDeliveryState.SENT
+                        } else {
+                            MessageDeliveryState.DELIVERED
+                        },
                     localText = if (mine) localText else null,
                     localEnvelope =
                         localEnvelope
@@ -211,8 +226,85 @@ class MessageStore(
 
     suspend fun markConversationRead(
         conversationId: String
-    ) {
+    ): List<String> {
 
+        var readIds = emptyList<String>()
+
+        context.messageDataStore.edit { preferences ->
+
+            val key =
+                messagesKey(
+                    conversationId
+                )
+
+            val existing =
+                decode(
+                    preferences[key] ?: "[]"
+                )
+
+            readIds =
+                existing
+                    .filter {
+                        !it.mine &&
+                            it.deliveryState !=
+                                MessageDeliveryState.READ
+                    }
+                    .map {
+                        it.packet.id
+                    }
+
+            val updated =
+                existing.map { message ->
+
+                    if (
+                        !message.mine &&
+                        message.deliveryState !=
+                            MessageDeliveryState.READ
+                    ) {
+                        message.copy(
+                            read = true,
+                            deliveryState =
+                                MessageDeliveryState.READ
+                        )
+                    } else {
+                        message
+                    }
+                }
+
+            preferences[key] =
+                encode(updated)
+        }
+
+        return readIds
+    }
+
+    suspend fun markMessageDelivered(
+        conversationId: String,
+        messageId: String
+    ) {
+        updateDeliveryState(
+            conversationId = conversationId,
+            messageId = messageId,
+            state = MessageDeliveryState.DELIVERED
+        )
+    }
+
+    suspend fun markMessageRead(
+        conversationId: String,
+        messageId: String
+    ) {
+        updateDeliveryState(
+            conversationId = conversationId,
+            messageId = messageId,
+            state = MessageDeliveryState.READ
+        )
+    }
+
+    private suspend fun updateDeliveryState(
+        conversationId: String,
+        messageId: String,
+        state: String
+    ) {
         context.messageDataStore.edit { preferences ->
 
             val key =
@@ -228,12 +320,12 @@ class MessageStore(
             val updated =
                 existing.map { message ->
 
-                    if (
-                        !message.mine &&
-                        !message.read
-                    ) {
+                    if (message.packet.id == messageId) {
                         message.copy(
-                            read = true
+                            read =
+                                state ==
+                                    MessageDeliveryState.READ,
+                            deliveryState = state
                         )
                     } else {
                         message
@@ -244,6 +336,7 @@ class MessageStore(
                 encode(updated)
         }
     }
+
 
     private fun encode(
         messages: List<StoredMessage>
@@ -320,6 +413,11 @@ class MessageStore(
                     put(
                         "read",
                         message.read
+                    )
+
+                    put(
+                        "delivery_state",
+                        message.deliveryState
                     )
 
                     message.localEnvelope?.let { envelope ->
@@ -488,19 +586,46 @@ class MessageStore(
                             null
                         }
 
+                    val mine =
+                        item.optBoolean(
+                            "mine",
+                            false
+                        )
+
+                    val read =
+                        item.optBoolean(
+                            "read",
+                            false
+                        )
+
+                    val deliveryState =
+                        item.optString(
+                            "delivery_state",
+                            ""
+                        ).takeIf {
+                            it == MessageDeliveryState.SENT ||
+                                it == MessageDeliveryState.DELIVERED ||
+                                it == MessageDeliveryState.READ
+                        } ?: when {
+                            mine ->
+                                MessageDeliveryState.SENT
+
+                            read ->
+                                MessageDeliveryState.READ
+
+                            else ->
+                                MessageDeliveryState.DELIVERED
+                        }
+
                     add(
                         StoredMessage(
                             packet = packet,
-                            mine =
-                                item.optBoolean(
-                                    "mine",
-                                    false
-                                ),
+                            mine = mine,
                             read =
-                                item.optBoolean(
-                                    "read",
-                                    false
-                                ),
+                                read ||
+                                    deliveryState ==
+                                        MessageDeliveryState.READ,
+                            deliveryState = deliveryState,
                             localText = localText,
                             localEnvelope = localEnvelope
                         )
