@@ -133,7 +133,8 @@ private data class Message(
     val timestamp: Long,
     val type: String = com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_TEXT,
     val replyToMessageId: String? = null,
-    val replyPreviewText: String? = null
+    val replyPreviewText: String? = null,
+    val deliveryState: String = com.mohnish.serverlessmessenger.data.MessageDeliveryState.SENT
 )
 
 @Composable
@@ -1917,7 +1918,8 @@ private fun ChatScreen(
                     timestamp = message.timestamp,
                     type = message.type,
                     replyToMessageId = message.replyToMessageId,
-                    replyPreviewText = message.replyPreviewText
+                    replyPreviewText = message.replyPreviewText,
+                    deliveryState = message.deliveryState
                 )
             }
 
@@ -1947,14 +1949,24 @@ private fun ChatScreen(
     val listState = rememberLazyListState()
 
     LaunchedEffect(identityId, contact?.identityId) {
-        messageStore.markConversationRead(identityId)
-
         contact?.let {
             peerConnectionManager.connectToContact(
                 peerId = it.identityId,
                 signingPublicKeyBase64 = it.publicKeyBase64,
                 agreementPublicKeyBase64 = it.agreementPublicKeyBase64
             )
+
+            val readIds =
+                messageStore.markConversationRead(
+                    identityId
+                )
+
+            if (readIds.isNotEmpty()) {
+                peerConnectionManager.sendReadAcks(
+                    peerId = it.identityId,
+                    messageIds = readIds
+                )
+            }
         }
     }
 
@@ -2669,11 +2681,44 @@ private fun MessageBubble(
 
                 Spacer(Modifier.height(3.dp))
 
-                Text(
-                    text = message.time,
-                    fontSize = 10.sp,
-                    color = SecondaryText
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = message.time,
+                        fontSize = 10.sp,
+                        color = SecondaryText
+                    )
+
+                    if (message.mine) {
+                        Spacer(Modifier.width(4.dp))
+
+                        Text(
+                            text =
+                                when (message.deliveryState) {
+                                    com.mohnish.serverlessmessenger.data.MessageDeliveryState.READ ->
+                                        "✓✓"
+
+                                    com.mohnish.serverlessmessenger.data.MessageDeliveryState.DELIVERED ->
+                                        "✓✓"
+
+                                    else ->
+                                        "✓"
+                                },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color =
+                                if (
+                                    message.deliveryState ==
+                                        com.mohnish.serverlessmessenger.data.MessageDeliveryState.READ
+                                ) {
+                                    BrandBlue
+                                } else {
+                                    SecondaryText
+                                }
+                        )
+                    }
+                }
             }
         }
     }
