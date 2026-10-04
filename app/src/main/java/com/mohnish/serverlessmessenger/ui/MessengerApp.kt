@@ -57,6 +57,12 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -96,6 +102,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -134,7 +141,9 @@ private data class Message(
     val type: String = com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_TEXT,
     val replyToMessageId: String? = null,
     val replyPreviewText: String? = null,
-    val deliveryState: String = com.mohnish.serverlessmessenger.data.MessageDeliveryState.SENT
+    val deliveryState: String = com.mohnish.serverlessmessenger.data.MessageDeliveryState.SENT,
+    val edited: Boolean = false,
+    val deleted: Boolean = false
 )
 
 @Composable
@@ -1896,6 +1905,18 @@ private fun ChatScreen(
         mutableStateOf<Message?>(null)
     }
 
+    var actionMessage by remember {
+        mutableStateOf<Message?>(null)
+    }
+
+    var editingMessage by remember {
+        mutableStateOf<Message?>(null)
+    }
+
+    var editText by remember {
+        mutableStateOf("")
+    }
+
     val storedMessages by messageStore
         .messages(
             conversationId = identityId,
@@ -1919,7 +1940,9 @@ private fun ChatScreen(
                     type = message.type,
                     replyToMessageId = message.replyToMessageId,
                     replyPreviewText = message.replyPreviewText,
-                    deliveryState = message.deliveryState
+                    deliveryState = message.deliveryState,
+                    edited = message.edited,
+                    deleted = message.deleted
                 )
             }
 
@@ -2094,9 +2117,113 @@ private fun ChatScreen(
                     },
                     onReply = {
                         replyingTo = it
+                    },
+                    onLongPress = {
+                        actionMessage = it
                     }
                 )
             }
+        }
+
+        if (actionMessage != null) {
+            val selected = actionMessage!!
+
+            AlertDialog(
+                onDismissRequest = {
+                    actionMessage = null
+                },
+                title = {
+                    Text("Message")
+                },
+                text = {
+                    Column {
+                        TextButton(
+                            onClick = {
+                                replyingTo = selected
+                                actionMessage = null
+                            }
+                        ) {
+                            Text("Reply")
+                        }
+
+                        if (selected.mine && !selected.deleted) {
+                            TextButton(
+                                onClick = {
+                                    editingMessage = selected
+                                    editText = selected.text
+                                    actionMessage = null
+                                }
+                            ) {
+                                Text("Edit")
+                            }
+
+                            TextButton(
+                                onClick = {
+                                    peerConnectionManager.sendDelete(
+                                        peerId = identityId,
+                                        messageId = selected.id
+                                    )
+                                    actionMessage = null
+                                }
+                            ) {
+                                Text("Delete")
+                            }
+                        }
+                    }
+                },
+                confirmButton = {}
+            )
+        }
+
+        if (editingMessage != null) {
+            AlertDialog(
+                onDismissRequest = {
+                    editingMessage = null
+                },
+                title = {
+                    Text("Edit message")
+                },
+                text = {
+                    OutlinedTextField(
+                        value = editText,
+                        onValueChange = {
+                            editText = it
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val selected = editingMessage
+
+                            if (
+                                selected != null &&
+                                editText.isNotBlank()
+                            ) {
+                                peerConnectionManager.sendEdit(
+                                    peerId = identityId,
+                                    messageId = selected.id,
+                                    newText = editText.trim()
+                                )
+                            }
+
+                            editingMessage = null
+                        }
+                    ) {
+                        Text("Save")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            editingMessage = null
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
 
         if (replyingTo != null) {
@@ -2502,7 +2629,8 @@ private fun ChatTopBar(
 private fun MessageBubble(
     message: Message,
     replyTarget: Message?,
-    onReply: (Message) -> Unit
+    onReply: (Message) -> Unit,
+    onLongPress: (Message) -> Unit
 ) {
     var dragOffset by remember(message.id) {
         mutableFloatStateOf(0f)
@@ -2522,39 +2650,26 @@ private fun MessageBubble(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { delta ->
+                        dragOffset = (dragOffset + delta).coerceAtLeast(0f)
+                    },
+                    onDragStopped = {
+                        if (dragOffset >= replyThreshold) {
+                            onReply(message)
+                        }
+                        dragOffset = 0f
+                    }
+                )
                 .pointerInput(message.id) {
-                    detectHorizontalDragGestures(
-                        onHorizontalDrag = { change, dragAmount ->
-                            if (dragAmount > 0f) {
-                                dragOffset =
-                                    (dragOffset + dragAmount)
-                                        .coerceIn(0f, replyThreshold)
-                                change.consume()
-                            }
-                        },
-                        onDragEnd = {
-                            if (dragOffset >= replyThreshold) {
-                                onReply(message)
-                            }
-                            dragOffset = 0f
-                        },
-                        onDragCancel = {
-                            dragOffset = 0f
+                    detectTapGestures(
+                        onLongPress = {
+                            onLongPress(message)
                         }
                     )
                 }
         ) {
-            if (dragOffset > 4f) {
-                Text(
-                    text = "↪",
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(start = 4.dp),
-                    fontSize = 20.sp,
-                    color = BrandBlue
-                )
-            }
-
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2667,15 +2782,46 @@ private fun MessageBubble(
                         }
 
                         Text(
-                            text = message.text,
+                            text =
+                                if (message.deleted) {
+                                    "This message was deleted"
+                                } else {
+                                    message.text
+                                },
                             fontSize = 16.sp,
                             lineHeight = 22.sp,
-                            color = if (message.mine) {
-                                Color.White
-                            } else {
-                                PrimaryText
-                            }
+                            fontStyle =
+                                if (message.deleted) {
+                                    FontStyle.Italic
+                                } else {
+                                    FontStyle.Normal
+                                },
+                            color =
+                                if (message.deleted) {
+                                    if (message.mine) {
+                                        Color.White.copy(alpha = 0.72f)
+                                    } else {
+                                        SecondaryText
+                                    }
+                                } else if (message.mine) {
+                                    Color.White
+                                } else {
+                                    PrimaryText
+                                }
                         )
+
+                        if (message.edited && !message.deleted) {
+                            Text(
+                                text = "edited",
+                                fontSize = 10.sp,
+                                color =
+                                    if (message.mine) {
+                                        Color.White.copy(alpha = 0.68f)
+                                    } else {
+                                        SecondaryText
+                                    }
+                            )
+                        }
                     }
                 }
 
@@ -2690,7 +2836,7 @@ private fun MessageBubble(
                         color = SecondaryText
                     )
 
-                    if (message.mine) {
+                    if (message.mine && !message.deleted) {
                         Spacer(Modifier.width(4.dp))
 
                         Text(
