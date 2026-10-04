@@ -376,6 +376,75 @@ class PeerConnectionManager(
         return true
     }
 
+    private fun publishControlEnvelope(
+        peerId: String,
+        envelope: MessageEnvelope
+    ): Boolean {
+
+        val session =
+            synchronized(sessions) {
+                sessions[peerId]
+            }
+                ?: return false
+
+        val packet =
+            runCatching {
+                MessageCrypto.encrypt(
+                    context =
+                        appContext,
+                    envelope =
+                        envelope,
+                    recipientIdentityId =
+                        session.peerId,
+                    recipientAgreementPublicKeyBase64 =
+                        session.agreementPublicKeyBase64
+                )
+            }.getOrNull()
+                ?: return false
+
+        val sent =
+            messageTransport?.publishMessage(
+                peerId =
+                    peerId,
+                packet =
+                    packet
+            )
+                ?: false
+
+        if (sent) {
+            emitDiagnostic(
+                peerId,
+                "CONTROL ENVELOPE PUBLISHED — type=${envelope.type} target=${envelope.targetMessageId}"
+            )
+        }
+
+        return sent
+    }
+
+    fun sendReadAcks(
+        peerId: String,
+        messageIds: List<String>
+    ) {
+        if (messageIds.isEmpty()) {
+            return
+        }
+
+        scope.launch {
+            messageIds.forEach { messageId ->
+                publishControlEnvelope(
+                    peerId = peerId,
+                    envelope =
+                        MessageEnvelope(
+                            type =
+                                MessageEnvelope.TYPE_READ_ACK,
+                            targetMessageId =
+                                messageId
+                        )
+                )
+            }
+        }
+    }
+
     private fun drainOutbox(
         session: PeerSession
     ) {
@@ -488,6 +557,53 @@ class PeerConnectionManager(
                     return
                 }
 
+        val envelope = decrypted.envelope
+
+        when (envelope.type) {
+
+            MessageEnvelope.TYPE_DELIVERY_ACK -> {
+                val targetMessageId =
+                    envelope.targetMessageId
+
+                if (!targetMessageId.isNullOrBlank()) {
+                    scope.launch {
+                        messageStore.markMessageDelivered(
+                            conversationId = peerId,
+                            messageId = targetMessageId
+                        )
+                    }
+
+                    emitDiagnostic(
+                        peerId,
+                        "DELIVERY ACK RECEIVED — target=$targetMessageId"
+                    )
+                }
+
+                return
+            }
+
+            MessageEnvelope.TYPE_READ_ACK -> {
+                val targetMessageId =
+                    envelope.targetMessageId
+
+                if (!targetMessageId.isNullOrBlank()) {
+                    scope.launch {
+                        messageStore.markMessageRead(
+                            conversationId = peerId,
+                            messageId = targetMessageId
+                        )
+                    }
+
+                    emitDiagnostic(
+                        peerId,
+                        "READ ACK RECEIVED — target=$targetMessageId"
+                    )
+                }
+
+                return
+            }
+        }
+
         scope.launch {
 
             messageStore.addEncryptedMessage(
@@ -500,7 +616,18 @@ class PeerConnectionManager(
                 localText =
                     decrypted.text,
                 localEnvelope =
-                    decrypted.envelope
+                    envelope
+            )
+
+            publishControlEnvelope(
+                peerId = peerId,
+                envelope =
+                    MessageEnvelope(
+                        type =
+                            MessageEnvelope.TYPE_DELIVERY_ACK,
+                        targetMessageId =
+                            packet.id
+                    )
             )
 
             onMessageReceived?.invoke(
@@ -511,7 +638,7 @@ class PeerConnectionManager(
 
         emitDiagnostic(
             peerId,
-            "INCOMING MESSAGE ACCEPTED — packet=${packet.id}"
+            "INCOMING MESSAGE ACCEPTED — packet=${packet.id} type=${envelope.type}"
         )
     }
 
