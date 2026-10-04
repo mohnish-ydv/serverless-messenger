@@ -56,6 +56,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -89,6 +90,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -125,7 +130,10 @@ private data class Message(
     val text: String,
     val mine: Boolean,
     val time: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val type: String = com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_TEXT,
+    val replyToMessageId: String? = null,
+    val replyPreviewText: String? = null
 )
 
 @Composable
@@ -1883,6 +1891,10 @@ private fun ChatScreen(
     var input by remember { mutableStateOf("") }
     var showAttachments by remember { mutableStateOf(false) }
 
+    var replyingTo by remember {
+        mutableStateOf<Message?>(null)
+    }
+
     val storedMessages by messageStore
         .messages(
             conversationId = identityId,
@@ -1902,7 +1914,10 @@ private fun ChatScreen(
                     text = message.text,
                     mine = message.mine,
                     time = formatMessageTime(message.timestamp),
-                    timestamp = message.timestamp
+                    timestamp = message.timestamp,
+                    type = message.type,
+                    replyToMessageId = message.replyToMessageId,
+                    replyPreviewText = message.replyPreviewText
                 )
             }
 
@@ -1912,7 +1927,12 @@ private fun ChatScreen(
                 .map { pending ->
                     Message(
                         id = "pending-${pending.id}",
-                        text = pending.text,
+                        text = pending.envelope.text,
+                        type = pending.envelope.type,
+                        replyToMessageId =
+                            pending.envelope.replyToMessageId,
+                        replyPreviewText =
+                            pending.envelope.replyPreviewText,
                         mine = true,
                         time = formatMessageTime(pending.createdAt),
                         timestamp = pending.createdAt
@@ -2055,8 +2075,25 @@ private fun ChatScreen(
                 items = messages,
                 key = { it.id }
             ) { message ->
-                MessageBubble(message)
+                MessageBubble(
+                    message = message,
+                    replyTarget = message.replyToMessageId?.let { replyId ->
+                        messages.firstOrNull { it.id == replyId }
+                    },
+                    onReply = {
+                        replyingTo = it
+                    }
+                )
             }
+        }
+
+        if (replyingTo != null) {
+            ReplyPreview(
+                message = replyingTo!!,
+                onDismiss = {
+                    replyingTo = null
+                }
+            )
         }
 
         ChatInput(
@@ -2069,24 +2106,52 @@ private fun ChatScreen(
                 val messageText = input.trim()
 
                 if (messageText.isNotEmpty()) {
+                    val target = replyingTo
+
                     coroutineScope.launch {
                         if (contact != null) {
+
+                            val envelope =
+                                if (target != null) {
+                                    com.mohnish.serverlessmessenger.security.MessageEnvelope(
+                                        type =
+                                            com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_REPLY,
+                                        text =
+                                            messageText,
+                                        replyToMessageId =
+                                            target.id,
+                                        replyPreviewText =
+                                            target.text
+                                    )
+                                } else {
+                                    com.mohnish.serverlessmessenger.security.MessageEnvelope.text(
+                                        messageText
+                                    )
+                                }
+
                             val sent =
                                 peerConnectionManager.send(
-                                    peerId = contact.identityId,
-                                    text = messageText
+                                    peerId =
+                                        contact.identityId,
+                                    envelope =
+                                        envelope
                                 )
 
                             if (!sent) {
                                 com.mohnish.serverlessmessenger.data.MessageOutbox(
                                     context
                                 ).add(
-                                    peerId = contact.identityId,
-                                    text = messageText
+                                    peerId =
+                                        contact.identityId,
+                                    text =
+                                        messageText,
+                                    envelope =
+                                        envelope
                                 )
 
                                 peerConnectionManager.connectToContact(
-                                    peerId = contact.identityId,
+                                    peerId =
+                                        contact.identityId,
                                     signingPublicKeyBase64 =
                                         contact.publicKeyBase64,
                                     agreementPublicKeyBase64 =
@@ -2097,6 +2162,7 @@ private fun ChatScreen(
                     }
 
                     input = ""
+                    replyingTo = null
                 }
             }
         )
@@ -2422,8 +2488,17 @@ private fun ChatTopBar(
 
 @Composable
 private fun MessageBubble(
-    message: Message
+    message: Message,
+    replyTarget: Message?,
+    onReply: (Message) -> Unit
 ) {
+    var dragOffset by remember(message.id) {
+        mutableFloatStateOf(0f)
+    }
+
+    val density = LocalDensity.current
+    val replyThreshold = with(density) { 72.dp.toPx() }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.mine) {
@@ -2432,57 +2507,235 @@ private fun MessageBubble(
             Arrangement.Start
         }
     ) {
-        Column(
-            horizontalAlignment = if (message.mine) {
-                Alignment.End
-            } else {
-                Alignment.Start
-            }
-        ) {
-            Box(
-                modifier = Modifier
-                    .clip(
-                        if (message.mine) {
-                            RoundedCornerShape(
-                                topStart = 16.dp,
-                                topEnd = 16.dp,
-                                bottomStart = 16.dp,
-                                bottomEnd = 4.dp
-                            )
-                        } else {
-                            RoundedCornerShape(
-                                topStart = 16.dp,
-                                topEnd = 16.dp,
-                                bottomStart = 4.dp,
-                                bottomEnd = 16.dp
-                            )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(message.id) {
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { change, dragAmount ->
+                            if (dragAmount > 0f) {
+                                dragOffset =
+                                    (dragOffset + dragAmount)
+                                        .coerceIn(0f, replyThreshold)
+                                change.consume()
+                            }
+                        },
+                        onDragEnd = {
+                            if (dragOffset >= replyThreshold) {
+                                onReply(message)
+                            }
+                            dragOffset = 0f
+                        },
+                        onDragCancel = {
+                            dragOffset = 0f
                         }
                     )
-                    .background(
-                        if (message.mine) BrandBlue else Surface
-                    )
-                    .padding(
-                        horizontal = 16.dp,
-                        vertical = 11.dp
-                    )
-            ) {
+                }
+        ) {
+            if (dragOffset > 4f) {
                 Text(
-                    text = message.text,
-                    fontSize = 16.sp,
-                    lineHeight = 22.sp,
-                    color = if (message.mine) {
-                        Color.White
-                    } else {
-                        PrimaryText
-                    }
+                    text = "↪",
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 4.dp),
+                    fontSize = 20.sp,
+                    color = BrandBlue
                 )
             }
 
-            Spacer(Modifier.height(3.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        translationX = dragOffset
+                    },
+                horizontalAlignment = if (message.mine) {
+                    Alignment.End
+                } else {
+                    Alignment.Start
+                }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(
+                            if (message.mine) {
+                                RoundedCornerShape(
+                                    topStart = 16.dp,
+                                    topEnd = 16.dp,
+                                    bottomStart = 16.dp,
+                                    bottomEnd = 4.dp
+                                )
+                            } else {
+                                RoundedCornerShape(
+                                    topStart = 16.dp,
+                                    topEnd = 16.dp,
+                                    bottomStart = 4.dp,
+                                    bottomEnd = 16.dp
+                                )
+                            }
+                        )
+                        .background(
+                            if (message.mine) BrandBlue else Surface
+                        )
+                        .padding(
+                            horizontal = 16.dp,
+                            vertical = 11.dp
+                        )
+                ) {
+                    Column {
+                        if (
+                            message.type ==
+                                com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_REPLY &&
+                            !message.replyPreviewText.isNullOrBlank()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (message.mine) {
+                                            Color.White.copy(alpha = 0.14f)
+                                        } else {
+                                            BrandBlue.copy(alpha = 0.08f)
+                                        }
+                                    )
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(3.dp)
+                                        .height(36.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (message.mine) {
+                                                Color.White
+                                            } else {
+                                                BrandBlue
+                                            }
+                                        )
+                                )
+
+                                Spacer(Modifier.width(8.dp))
+
+                                Column(
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = if (replyTarget?.mine == true) {
+                                            "You"
+                                        } else {
+                                            "Message"
+                                        },
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (message.mine) {
+                                            Color.White
+                                        } else {
+                                            BrandBlue
+                                        }
+                                    )
+
+                                    Text(
+                                        text = message.replyPreviewText.orEmpty(),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp,
+                                        color = if (message.mine) {
+                                            Color.White.copy(alpha = 0.88f)
+                                        } else {
+                                            SecondaryText
+                                        }
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        Text(
+                            text = message.text,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp,
+                            color = if (message.mine) {
+                                Color.White
+                            } else {
+                                PrimaryText
+                            }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(3.dp))
+
+                Text(
+                    text = message.time,
+                    fontSize = 10.sp,
+                    color = SecondaryText
+                )
+            }
+        }
+    }
+}
+@Composable
+private fun ReplyPreview(
+    message: Message,
+    onDismiss: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Surface)
+            .padding(
+                start = 16.dp,
+                end = 8.dp,
+                top = 8.dp,
+                bottom = 6.dp
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(40.dp)
+                .clip(CircleShape)
+                .background(BrandBlue)
+        )
+
+        Spacer(
+            Modifier.width(10.dp)
+        )
+
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = if (message.mine) {
+                    "Replying to yourself"
+                } else {
+                    "Replying to message"
+                },
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = BrandBlue
+            )
 
             Text(
-                text = message.time,
-                fontSize = 10.sp,
+                text = message.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 13.sp,
+                color = PrimaryText
+            )
+        }
+
+        IconButton(
+            onClick = onDismiss
+        ) {
+            Text(
+                text = "×",
+                fontSize = 22.sp,
                 color = SecondaryText
             )
         }
