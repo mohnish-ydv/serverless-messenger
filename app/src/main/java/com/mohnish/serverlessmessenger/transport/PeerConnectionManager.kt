@@ -48,6 +48,9 @@ class PeerConnectionManager(
     private val sessions =
         mutableMapOf<String, PeerSession>()
 
+    private val webRtcTransports =
+        mutableMapOf<String, WebRtcTransport>()
+
     private val diagnosticHistory =
         mutableListOf<Pair<String, String>>()
 
@@ -89,6 +92,27 @@ class PeerConnectionManager(
         null
 
     init {
+
+        /*
+         * WebRTC negotiation signals arrive through the existing
+         * encrypted Nostr signaling transport.
+         */
+        signaling.setIncomingListener {
+                peerId,
+                signingPublicKeyBase64,
+                agreementPublicKeyBase64,
+                signal ->
+
+            handleWebRtcSignal(
+                peerId = peerId,
+                signingPublicKeyBase64 =
+                    signingPublicKeyBase64,
+                agreementPublicKeyBase64 =
+                    agreementPublicKeyBase64,
+                signal = signal
+            )
+        }
+
         val transport = messageTransport
 
         if (transport == null) {
@@ -182,6 +206,151 @@ class PeerConnectionManager(
         )
     }
 
+    private fun createWebRtcTransport(
+        session: PeerSession
+    ): WebRtcTransport {
+
+        val existing =
+            synchronized(webRtcTransports) {
+                webRtcTransports[session.peerId]
+            }
+
+        if (existing != null) {
+            return existing
+        }
+
+        val transport =
+            WebRtcTransport(appContext)
+
+        transport.onDiagnostic = { message ->
+            emitDiagnostic(
+                session.peerId,
+                "WEBRTC — $message"
+            )
+        }
+
+        transport.onStateChanged = { state ->
+            emitDiagnostic(
+                session.peerId,
+                "WEBRTC STATE — ${state.name}"
+            )
+
+            onStateChanged?.invoke(
+                PeerConnectionState(
+                    peerId = session.peerId,
+                    state = state
+                )
+            )
+        }
+
+        transport.onLocalDescription = { description ->
+            emitDiagnostic(
+                session.peerId,
+                "WEBRTC LOCAL DESCRIPTION — ${description.type}"
+            )
+
+            signaling.publish(
+                peerId = session.peerId,
+                signal =
+                    PeerSignal.Description(
+                        description = description
+                    )
+            )
+        }
+
+        transport.onLocalIceCandidate = { candidate ->
+            emitDiagnostic(
+                session.peerId,
+                "WEBRTC LOCAL ICE CANDIDATE"
+            )
+
+            signaling.publish(
+                peerId = session.peerId,
+                signal =
+                    PeerSignal.IceCandidate(
+                        candidate = candidate
+                    )
+            )
+        }
+
+        synchronized(webRtcTransports) {
+            webRtcTransports[session.peerId] = transport
+        }
+
+        return transport
+    }
+
+    private fun handleWebRtcSignal(
+        peerId: String,
+        signingPublicKeyBase64: String,
+        agreementPublicKeyBase64: String,
+        signal: PeerSignal
+    ) {
+
+        val session =
+            synchronized(sessions) {
+                sessions[peerId]
+            }
+                ?: PeerSession(
+                    peerId = peerId,
+                    signingPublicKeyBase64 =
+                        signingPublicKeyBase64,
+                    agreementPublicKeyBase64 =
+                        agreementPublicKeyBase64
+                ).also { newSession ->
+                    synchronized(sessions) {
+                        sessions[peerId] = newSession
+                    }
+                }
+
+        val transport =
+            createWebRtcTransport(session)
+
+        when (signal) {
+
+            is PeerSignal.Description -> {
+
+                emitDiagnostic(
+                    peerId,
+                    "WEBRTC REMOTE DESCRIPTION — ${signal.description.type}"
+                )
+
+                when (
+                    signal.description.type.lowercase()
+                ) {
+
+                    "offer" ->
+                        transport.acceptOffer(
+                            signal.description
+                        )
+
+                    "answer" ->
+                        transport.acceptAnswer(
+                            signal.description
+                        )
+
+                    else ->
+                        emitDiagnostic(
+                            peerId,
+                            "WEBRTC UNKNOWN DESCRIPTION — ${signal.description.type}"
+                        )
+                }
+            }
+
+            is PeerSignal.IceCandidate -> {
+
+                emitDiagnostic(
+                    peerId,
+                    "WEBRTC REMOTE ICE CANDIDATE"
+                )
+
+                transport.addRemoteIceCandidate(
+                    signal.candidate
+                )
+            }
+        }
+    }
+
     /**
      * Registers a known contact as a messaging peer.
      *
@@ -193,33 +362,54 @@ class PeerConnectionManager(
         agreementPublicKeyBase64: String
     ) {
 
-        synchronized(
-            sessions
-        ) {
-            sessions[peerId] =
-                PeerSession(
-                    peerId =
-                        peerId,
-                    signingPublicKeyBase64 =
-                        signingPublicKeyBase64,
-                    agreementPublicKeyBase64 =
-                        agreementPublicKeyBase64
-                )
+        val session =
+            PeerSession(
+                peerId = peerId,
+                signingPublicKeyBase64 =
+                    signingPublicKeyBase64,
+                agreementPublicKeyBase64 =
+                    agreementPublicKeyBase64
+            )
+
+        synchronized(sessions) {
+            sessions[peerId] = session
         }
 
         emitDiagnostic(
             peerId,
-            "NOSTR MESSAGE SESSION READY"
+            "PEER SESSION READY — starting WebRTC"
         )
+
+        signaling.setListener(
+            peerId = peerId
+        ) { signal ->
+
+            handleWebRtcSignal(
+                peerId = peerId,
+                signingPublicKeyBase64 =
+                    session.signingPublicKeyBase64,
+                agreementPublicKeyBase64 =
+                    session.agreementPublicKeyBase64,
+                signal = signal
+            )
+        }
+
+        val transport =
+            createWebRtcTransport(session)
 
         onStateChanged?.invoke(
             PeerConnectionState(
-                peerId =
-                    peerId,
-                state =
-                    TransportState.CONNECTING
+                peerId = peerId,
+                state = TransportState.CONNECTING
             )
         )
+
+        emitDiagnostic(
+            peerId,
+            "WEBRTC — creating offer"
+        )
+
+        transport.createOffer()
     }
 
     /**
@@ -253,20 +443,31 @@ class PeerConnectionManager(
         agreementPublicKeyBase64: String,
         offer: SignalingDescription
     ) {
-        connectToContact(
-            peerId =
-                peerId,
-            signingPublicKeyBase64 =
-                signingPublicKeyBase64,
-            agreementPublicKeyBase64 =
-                agreementPublicKeyBase64
-        )
+
+        val session =
+            PeerSession(
+                peerId = peerId,
+                signingPublicKeyBase64 =
+                    signingPublicKeyBase64,
+                agreementPublicKeyBase64 =
+                    agreementPublicKeyBase64
+            )
+
+        synchronized(sessions) {
+            sessions[peerId] = session
+        }
+
+        val transport =
+            createWebRtcTransport(session)
 
         emitDiagnostic(
             peerId,
-            "LEGACY WEBRTC OFFER IGNORED — NOSTR MESSAGE TRANSPORT ACTIVE"
+            "WEBRTC — accepting incoming offer"
         )
+
+        transport.acceptOffer(offer)
     }
+
 
     fun send(
         peerId: String,

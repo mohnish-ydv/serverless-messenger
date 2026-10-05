@@ -872,7 +872,13 @@ class WebRtcTransport(
 
                 override fun onBufferedAmountChange(
                     previousAmount: Long
-                ) = Unit
+                ) {
+                    diagnostic(
+                        "DATACHANNEL BUFFER — " +
+                            "previous=$previousAmount " +
+                            "current=${channel.bufferedAmount()}"
+                    )
+                }
 
                 override fun onStateChange() {
 
