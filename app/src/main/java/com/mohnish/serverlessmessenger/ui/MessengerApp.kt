@@ -143,7 +143,8 @@ private data class Message(
     val replyPreviewText: String? = null,
     val deliveryState: String = com.mohnish.serverlessmessenger.data.MessageDeliveryState.SENT,
     val edited: Boolean = false,
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    val reaction: String? = null
 )
 
 @Composable
@@ -1917,6 +1918,10 @@ private fun ChatScreen(
         mutableStateOf("")
     }
 
+    var reactionMessage by remember {
+        mutableStateOf<Message?>(null)
+    }
+
     val storedMessages by messageStore
         .messages(
             conversationId = identityId,
@@ -1942,7 +1947,8 @@ private fun ChatScreen(
                     replyPreviewText = message.replyPreviewText,
                     deliveryState = message.deliveryState,
                     edited = message.edited,
-                    deleted = message.deleted
+                    deleted = message.deleted,
+                    reaction = message.reaction
                 )
             }
 
@@ -1960,7 +1966,8 @@ private fun ChatScreen(
                             pending.envelope.replyPreviewText,
                         mine = true,
                         time = formatMessageTime(pending.createdAt),
-                        timestamp = pending.createdAt
+                        timestamp = pending.createdAt,
+                        reaction = pending.envelope.reaction
                     )
                 }
 
@@ -2139,6 +2146,15 @@ private fun ChatScreen(
                     Column {
                         TextButton(
                             onClick = {
+                                reactionMessage = selected
+                                actionMessage = null
+                            }
+                        ) {
+                            Text("React")
+                        }
+
+                        TextButton(
+                            onClick = {
                                 replyingTo = selected
                                 actionMessage = null
                             }
@@ -2167,6 +2183,44 @@ private fun ChatScreen(
                                 }
                             ) {
                                 Text("Delete")
+                            }
+                        }
+                    }
+                },
+                confirmButton = {}
+            )
+        }
+
+        if (reactionMessage != null) {
+            val selected = reactionMessage!!
+
+            AlertDialog(
+                onDismissRequest = {
+                    reactionMessage = null
+                },
+                title = {
+                    Text("React")
+                },
+                text = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        listOf("❤️", "😂", "👍", "😮", "😢", "🙏").forEach { emoji ->
+                            TextButton(
+                                onClick = {
+                                    peerConnectionManager.sendReaction(
+                                        peerId = identityId,
+                                        messageId = selected.id,
+                                        reaction = emoji
+                                    )
+                                    reactionMessage = null
+                                }
+                            ) {
+                                Text(
+                                    text = emoji,
+                                    fontSize = 24.sp
+                                )
                             }
                         }
                     }
@@ -2824,6 +2878,15 @@ private fun MessageBubble(
                         }
                     }
                 }
+
+
+                        if (!message.reaction.isNullOrBlank() && !message.deleted) {
+                            Text(
+                                text = message.reaction!!,
+                                fontSize = 18.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
 
                 Spacer(Modifier.height(3.dp))
 

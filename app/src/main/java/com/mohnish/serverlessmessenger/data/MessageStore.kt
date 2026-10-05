@@ -366,6 +366,74 @@ class MessageStore(
         }
     }
 
+    suspend fun setReaction(
+        conversationId: String,
+        messageId: String,
+        reaction: String
+    ) {
+        if (reaction.isBlank()) return
+
+        context.messageDataStore.edit { preferences ->
+            val key = messagesKey(conversationId)
+            val existing = decode(preferences[key] ?: "[]")
+
+            val updated = existing.map { message ->
+                if (message.packet.id == messageId) {
+                    val envelope =
+                        message.localEnvelope
+                            ?: MessageEnvelope(
+                                type = MessageEnvelope.TYPE_TEXT,
+                                text = message.localText.orEmpty()
+                            )
+
+                    message.copy(
+                        localEnvelope = envelope.copy(
+                            reaction = reaction
+                        )
+                    )
+                } else {
+                    message
+                }
+            }
+
+            preferences[key] = encode(updated)
+        }
+    }
+
+    suspend fun applyRemoteReaction(
+        conversationId: String,
+        messageId: String,
+        reaction: String
+    ) {
+        if (reaction.isBlank()) return
+
+        context.messageDataStore.edit { preferences ->
+            val key = messagesKey(conversationId)
+            val existing = decode(preferences[key] ?: "[]")
+
+            val updated = existing.map { message ->
+                if (message.packet.id == messageId) {
+                    val envelope =
+                        message.localEnvelope
+                            ?: MessageEnvelope(
+                                type = MessageEnvelope.TYPE_TEXT,
+                                text = message.localText.orEmpty()
+                            )
+
+                    message.copy(
+                        localEnvelope = envelope.copy(
+                            reaction = reaction
+                        )
+                    )
+                } else {
+                    message
+                }
+            }
+
+            preferences[key] = encode(updated)
+        }
+    }
+
     suspend fun applyRemoteEdit(
         conversationId: String,
         messageId: String,
@@ -662,18 +730,12 @@ class MessageStore(
                         )
 
                     val localText =
-                        item.optString(
-                            "local_text",
-                            null
-                        ).takeIf {
+                        item.optString("local_text").takeIf { it != "null" }.takeIf {
                             !it.isNullOrBlank()
                         }
 
                     val localType =
-                        item.optString(
-                            "local_type",
-                            null
-                        ).takeIf {
+                        item.optString("local_type").takeIf { it != "null" }.takeIf {
                             !it.isNullOrBlank()
                         }
 
@@ -686,31 +748,19 @@ class MessageStore(
                                 text =
                                     localText.orEmpty(),
                                 replyToMessageId =
-                                    item.optString(
-                                        "local_reply_to",
-                                        null
-                                    ).takeIf {
+                                    item.optString("local_reply_to").takeIf { it != "null" }.takeIf {
                                         !it.isNullOrBlank()
                                     },
                                 replyPreviewText =
-                                    item.optString(
-                                        "local_reply_preview",
-                                        null
-                                    ).takeIf {
+                                    item.optString("local_reply_preview").takeIf { it != "null" }.takeIf {
                                         !it.isNullOrBlank()
                                     },
                                 targetMessageId =
-                                    item.optString(
-                                        "local_target",
-                                        null
-                                    ).takeIf {
+                                    item.optString("local_target").takeIf { it != "null" }.takeIf {
                                         !it.isNullOrBlank()
                                     },
                                 reaction =
-                                    item.optString(
-                                        "local_reaction",
-                                        null
-                                    ).takeIf {
+                                    item.optString("local_reaction").takeIf { it != "null" }.takeIf {
                                         !it.isNullOrBlank()
                                     }
                             )

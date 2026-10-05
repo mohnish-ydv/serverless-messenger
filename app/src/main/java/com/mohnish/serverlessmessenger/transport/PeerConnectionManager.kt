@@ -519,6 +519,47 @@ class PeerConnectionManager(
         return sent
     }
 
+    fun sendReaction(
+        peerId: String,
+        messageId: String,
+        reaction: String
+    ): Boolean {
+        if (reaction.isBlank()) {
+            return false
+        }
+
+        val sent =
+            publishControlEnvelope(
+                peerId = peerId,
+                envelope =
+                    MessageEnvelope(
+                        type =
+                            MessageEnvelope.TYPE_REACTION,
+                        targetMessageId =
+                            messageId,
+                        reaction =
+                            reaction
+                    )
+            )
+
+        if (sent) {
+            scope.launch {
+                messageStore.setReaction(
+                    conversationId = peerId,
+                    messageId = messageId,
+                    reaction = reaction
+                )
+            }
+
+            emitDiagnostic(
+                peerId,
+                "REACTION PUBLISHED — target=$messageId reaction=$reaction"
+            )
+        }
+
+        return sent
+    }
+
     private fun drainOutbox(
         session: PeerSession
     ) {
@@ -681,6 +722,39 @@ class PeerConnectionManager(
                         onMessageReceived?.invoke(
                             peerId,
                             "This message was deleted"
+                        )
+                    }
+                }
+
+                return
+            }
+
+            MessageEnvelope.TYPE_REACTION -> {
+                val targetMessageId =
+                    envelope.targetMessageId
+
+                val reaction =
+                    envelope.reaction
+
+                if (
+                    !targetMessageId.isNullOrBlank() &&
+                    !reaction.isNullOrBlank()
+                ) {
+                    scope.launch {
+                        messageStore.applyRemoteReaction(
+                            conversationId = peerId,
+                            messageId = targetMessageId,
+                            reaction = reaction
+                        )
+
+                        emitDiagnostic(
+                            peerId,
+                            "REMOTE REACTION APPLIED — target=$targetMessageId reaction=$reaction"
+                        )
+
+                        onMessageReceived?.invoke(
+                            peerId,
+                            reaction
                         )
                     }
                 }
