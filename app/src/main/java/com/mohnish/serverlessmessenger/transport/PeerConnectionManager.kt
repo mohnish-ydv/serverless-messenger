@@ -573,7 +573,8 @@ class PeerConnectionManager(
             for (item in pending) {
 
                 if (
-                    item.text.isBlank()
+                    item.text.isBlank() &&
+                    item.envelope.mediaBase64.isNullOrBlank()
                 ) {
                     outbox.remove(
                         item.id

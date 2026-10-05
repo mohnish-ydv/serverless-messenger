@@ -15,7 +15,10 @@ data class MessageEnvelope(
     val replyToMessageId: String? = null,
     val replyPreviewText: String? = null,
     val targetMessageId: String? = null,
-    val reaction: String? = null
+    val reaction: String? = null,
+    val mediaId: String? = null,
+    val mediaMimeType: String? = null,
+    val mediaBase64: String? = null
 ) {
     fun toJson(): String =
         JSONObject().apply {
@@ -38,6 +41,18 @@ data class MessageEnvelope(
             reaction?.let {
                 put("reaction", it)
             }
+
+            mediaId?.let {
+                put("mediaId", it)
+            }
+
+            mediaMimeType?.let {
+                put("mediaMimeType", it)
+            }
+
+            mediaBase64?.let {
+                put("mediaBase64", it)
+            }
         }.toString()
 
     companion object {
@@ -50,6 +65,7 @@ data class MessageEnvelope(
         const val TYPE_REACTION = "reaction"
         const val TYPE_DELIVERY_ACK = "delivery_ack"
         const val TYPE_READ_ACK = "read_ack"
+        const val TYPE_PHOTO = "photo"
 
         fun text(value: String): MessageEnvelope =
             MessageEnvelope(
@@ -93,6 +109,21 @@ data class MessageEnvelope(
                         reaction =
                             json.optString(
                                 "reaction",
+                                null
+                            ),
+                        mediaId =
+                            json.optString(
+                                "mediaId",
+                                null
+                            ),
+                        mediaMimeType =
+                            json.optString(
+                                "mediaMimeType",
+                                null
+                            ),
+                        mediaBase64 =
+                            json.optString(
+                                "mediaBase64",
                                 null
                             )
                     )

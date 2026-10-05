@@ -25,6 +25,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.offset
 
 import com.mohnish.serverlessmessenger.security.DeviceIdentityManager
 import com.mohnish.serverlessmessenger.security.SignalingCrypto
@@ -109,9 +111,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.Manifest
+import android.widget.Toast
+import android.util.Base64
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.BitmapFactory
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetState
@@ -144,7 +149,10 @@ private data class Message(
     val deliveryState: String = com.mohnish.serverlessmessenger.data.MessageDeliveryState.SENT,
     val edited: Boolean = false,
     val deleted: Boolean = false,
-    val reaction: String? = null
+    val reaction: String? = null,
+    val mediaId: String? = null,
+    val mediaMimeType: String? = null,
+    val mediaBase64: String? = null
 )
 
 @Composable
@@ -365,6 +373,10 @@ private fun IdentityScreen(
     val context = LocalContext.current
     val profileStore = remember { ProfileStore(context) }
     val coroutineScope = rememberCoroutineScope()
+    var selectedPhoto by remember {
+        mutableStateOf<com.mohnish.serverlessmessenger.media.StoredPhoto?>(null)
+    }
+
 
     val identity = remember(context) {
         DeviceIdentityManager.getOrCreate(context)
@@ -1885,7 +1897,35 @@ private fun ChatScreen(
     val messageStore = remember { MessageStore(context) }
     val messageOutbox =
         remember { com.mohnish.serverlessmessenger.data.MessageOutbox(context) }
+    val photoStore =
+        remember {
+            com.mohnish.serverlessmessenger.media.PhotoStore(context)
+        }
     val coroutineScope = rememberCoroutineScope()
+
+    var selectedPhoto by remember {
+        mutableStateOf<com.mohnish.serverlessmessenger.media.StoredPhoto?>(null)
+    }
+
+    val photoPickerLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent()
+        ) { uri ->
+            if (uri != null) {
+                val storedPhoto =
+                    photoStore.importPhoto(uri)
+
+                if (storedPhoto != null) {
+                    selectedPhoto = storedPhoto
+                } else {
+                    android.widget.Toast.makeText(
+                        context,
+                        "Couldn't save photo",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
 
     val contacts by contactStore.contacts.collectAsState(
         initial = emptyList()
@@ -1948,7 +1988,10 @@ private fun ChatScreen(
                     deliveryState = message.deliveryState,
                     edited = message.edited,
                     deleted = message.deleted,
-                    reaction = message.reaction
+                    reaction = message.reaction,
+                    mediaId = message.mediaId,
+                    mediaMimeType = message.mediaMimeType,
+                    mediaBase64 = message.mediaBase64
                 )
             }
 
@@ -1967,7 +2010,10 @@ private fun ChatScreen(
                         mine = true,
                         time = formatMessageTime(pending.createdAt),
                         timestamp = pending.createdAt,
-                        reaction = pending.envelope.reaction
+                        reaction = pending.envelope.reaction,
+                        mediaId = pending.envelope.mediaId,
+                        mediaMimeType = pending.envelope.mediaMimeType,
+                        mediaBase64 = pending.envelope.mediaBase64
                     )
                 }
 
@@ -2289,37 +2335,89 @@ private fun ChatScreen(
             )
         }
 
+        if (selectedPhoto != null) {
+            SelectedPhotoPreview(
+                photo = selectedPhoto!!,
+                onRemove = {
+                    selectedPhoto = null
+                }
+            )
+        }
+
         ChatInput(
             value = input,
             onValueChange = { input = it },
             onAttach = {
                 showAttachments = true
             },
+            canSend =
+                input.isNotBlank() ||
+                    selectedPhoto != null,
             onSend = {
                 val messageText = input.trim()
+                val photo = selectedPhoto
+                val target = replyingTo
 
-                if (messageText.isNotEmpty()) {
-                    val target = replyingTo
-
+                if (
+                    messageText.isNotEmpty() ||
+                    photo != null
+                ) {
                     coroutineScope.launch {
                         if (contact != null) {
 
+                            val encodedPhoto =
+                                photo?.let {
+                                    photoStore.encodeForMessage(it)
+                                }
+
+                            if (
+                                photo != null &&
+                                encodedPhoto == null
+                            ) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Photo could not be prepared",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                return@launch
+                            }
+
                             val envelope =
-                                if (target != null) {
-                                    com.mohnish.serverlessmessenger.security.MessageEnvelope(
-                                        type =
-                                            com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_REPLY,
-                                        text =
-                                            messageText,
-                                        replyToMessageId =
-                                            target.id,
-                                        replyPreviewText =
-                                            target.text
-                                    )
-                                } else {
-                                    com.mohnish.serverlessmessenger.security.MessageEnvelope.text(
-                                        messageText
-                                    )
+                                when {
+                                    encodedPhoto != null ->
+                                        com.mohnish.serverlessmessenger.security.MessageEnvelope(
+                                            type =
+                                                com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_PHOTO,
+                                            text =
+                                                messageText,
+                                            replyToMessageId =
+                                                target?.id,
+                                            replyPreviewText =
+                                                target?.text,
+                                            mediaId =
+                                                encodedPhoto.id,
+                                            mediaMimeType =
+                                                encodedPhoto.mimeType,
+                                            mediaBase64 =
+                                                encodedPhoto.base64
+                                        )
+
+                                    target != null ->
+                                        com.mohnish.serverlessmessenger.security.MessageEnvelope(
+                                            type =
+                                                com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_REPLY,
+                                            text =
+                                                messageText,
+                                            replyToMessageId =
+                                                target.id,
+                                            replyPreviewText =
+                                                target.text
+                                        )
+
+                                    else ->
+                                        com.mohnish.serverlessmessenger.security.MessageEnvelope.text(
+                                            messageText
+                                        )
                                 }
 
                             val sent =
@@ -2331,31 +2429,48 @@ private fun ChatScreen(
                                 )
 
                             if (!sent) {
-                                com.mohnish.serverlessmessenger.data.MessageOutbox(
-                                    context
-                                ).add(
-                                    peerId =
-                                        contact.identityId,
-                                    text =
-                                        messageText,
-                                    envelope =
-                                        envelope
-                                )
+                                /*
+                                 * A photo can fail permanently because the
+                                 * relay rejects an oversized event. Do not
+                                 * put it into the durable text outbox, and
+                                 * do not clear the photo preview.
+                                 */
+                                if (photo != null) {
+                                    Toast.makeText(
+                                        context,
+                                        "Photo is too large for the current relay. Try a smaller photo.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else {
+                                    com.mohnish.serverlessmessenger.data.MessageOutbox(
+                                        context
+                                    ).add(
+                                        peerId =
+                                            contact.identityId,
+                                        text =
+                                            messageText,
+                                        envelope =
+                                            envelope
+                                    )
 
-                                peerConnectionManager.connectToContact(
-                                    peerId =
-                                        contact.identityId,
-                                    signingPublicKeyBase64 =
-                                        contact.publicKeyBase64,
-                                    agreementPublicKeyBase64 =
-                                        contact.agreementPublicKeyBase64
-                                )
+                                    peerConnectionManager.connectToContact(
+                                        peerId =
+                                            contact.identityId,
+                                        signingPublicKeyBase64 =
+                                            contact.publicKeyBase64,
+                                        agreementPublicKeyBase64 =
+                                            contact.agreementPublicKeyBase64
+                                    )
+                                }
+
+                                return@launch
                             }
+
+                            input = ""
+                            replyingTo = null
+                            selectedPhoto = null
                         }
                     }
-
-                    input = ""
-                    replyingTo = null
                 }
             }
         )
@@ -2365,6 +2480,10 @@ private fun ChatScreen(
         AttachmentSheet(
             onDismiss = {
                 showAttachments = false
+            },
+            onPhoto = {
+                showAttachments = false
+                photoPickerLauncher.launch("image/*")
             }
         )
     }
@@ -2835,34 +2954,69 @@ private fun MessageBubble(
                             Spacer(Modifier.height(8.dp))
                         }
 
-                        Text(
-                            text =
-                                if (message.deleted) {
-                                    "This message was deleted"
-                                } else {
-                                    message.text
-                                },
-                            fontSize = 16.sp,
-                            lineHeight = 22.sp,
-                            fontStyle =
-                                if (message.deleted) {
-                                    FontStyle.Italic
-                                } else {
-                                    FontStyle.Normal
-                                },
-                            color =
-                                if (message.deleted) {
-                                    if (message.mine) {
-                                        Color.White.copy(alpha = 0.72f)
-                                    } else {
-                                        SecondaryText
-                                    }
-                                } else if (message.mine) {
-                                    Color.White
-                                } else {
-                                    PrimaryText
+                        if (
+                            message.type ==
+                                com.mohnish.serverlessmessenger.security.MessageEnvelope.TYPE_PHOTO &&
+                            !message.mediaBase64.isNullOrBlank()
+                        ) {
+                            val photoBitmap =
+                                remember(message.id) {
+                                    runCatching {
+                                        val bytes =
+                                            Base64.decode(
+                                                message.mediaBase64,
+                                                Base64.DEFAULT
+                                            )
+
+                                        BitmapFactory.decodeByteArray(
+                                            bytes,
+                                            0,
+                                            bytes.size
+                                        )
+                                    }.getOrNull()
                                 }
-                        )
+
+                            if (photoBitmap != null) {
+                                Image(
+                                    bitmap = photoBitmap.asImageBitmap(),
+                                    contentDescription = "Photo",
+                                    modifier = Modifier
+                                        .width(260.dp)
+                                        .height(320.dp)
+                                        .clip(RoundedCornerShape(12.dp)),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
+                        } else {
+                            Text(
+                                text =
+                                    if (message.deleted) {
+                                        "This message was deleted"
+                                    } else {
+                                        message.text
+                                    },
+                                fontSize = 16.sp,
+                                lineHeight = 22.sp,
+                                fontStyle =
+                                    if (message.deleted) {
+                                        FontStyle.Italic
+                                    } else {
+                                        FontStyle.Normal
+                                    },
+                                color =
+                                    if (message.deleted) {
+                                        if (message.mine) {
+                                            Color.White.copy(alpha = 0.72f)
+                                        } else {
+                                            SecondaryText
+                                        }
+                                    } else if (message.mine) {
+                                        Color.White
+                                    } else {
+                                        PrimaryText
+                                    }
+                            )
+                        }
 
                         if (message.edited && !message.deleted) {
                             Text(
@@ -2997,11 +3151,62 @@ private fun ReplyPreview(
 }
 
 @Composable
+private fun SelectedPhotoPreview(
+    photo: com.mohnish.serverlessmessenger.media.StoredPhoto,
+    onRemove: () -> Unit
+) {
+    val bitmap = remember(photo.file.absolutePath) {
+        android.graphics.BitmapFactory.decodeFile(
+            photo.file.absolutePath
+        )
+    }
+
+    if (bitmap != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = 12.dp,
+                    end = 12.dp,
+                    bottom = 8.dp
+                )
+        ) {
+            androidx.compose.foundation.Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "Selected photo",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(96.dp)
+                    .clip(RoundedCornerShape(16.dp))
+            )
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 4.dp, y = (-4).dp)
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .clickable(onClick = onRemove),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "×",
+                    color = Color.White,
+                    fontSize = 18.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ChatInput(
     value: String,
     onValueChange: (String) -> Unit,
     onAttach: () -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    canSend: Boolean = value.isNotBlank()
 ) {
     Row(
         modifier = Modifier
@@ -3061,15 +3266,18 @@ private fun ChatInput(
                 .size(52.dp)
                 .clip(CircleShape)
                 .background(
-                    if (value.isBlank()) Border else BrandBlue
+                    if (canSend) BrandBlue else Border
                 )
-                .clickable(enabled = value.isNotBlank(), onClick = onSend),
+                .clickable(
+                    enabled = canSend,
+                    onClick = onSend
+                ),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Outlined.Send,
                 contentDescription = "Send",
-                tint = if (value.isBlank()) SecondaryText else Color.White
+                tint = if (canSend) Color.White else SecondaryText
             )
         }
     }
@@ -3082,7 +3290,8 @@ private fun ChatInput(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AttachmentSheet(
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onPhoto: () -> Unit
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -3121,7 +3330,11 @@ private fun AttachmentSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                AttachmentAction("Photo", BrandBlue)
+                AttachmentAction(
+                    label = "Photo",
+                    color = BrandBlue,
+                    onClick = onPhoto
+                )
                 AttachmentAction("Camera", Color(0xFF8E6BFF))
                 AttachmentAction("File", Color(0xFFFF9F43))
             }
@@ -3143,7 +3356,8 @@ private fun AttachmentSheet(
 @Composable
 private fun AttachmentAction(
     label: String,
-    color: Color
+    color: Color,
+    onClick: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier.width(88.dp),
@@ -3153,7 +3367,8 @@ private fun AttachmentAction(
             modifier = Modifier
                 .size(56.dp)
                 .clip(CircleShape)
-                .background(color),
+                .background(color)
+                .clickable(onClick = onClick),
             contentAlignment = Alignment.Center
         ) {
             Icon(

@@ -243,6 +243,25 @@ class NostrPeerSignaling(
                 .put(event)
                 .toString()
 
+        /*
+         * nos.lol rejects oversized events asynchronously with:
+         * ["OK", eventId, false, "invalid: event too large: ..."]
+         *
+         * publishMessage() has a synchronous Boolean API, so perform
+         * the same safety check before websocket.send(). This prevents
+         * the UI from treating a relay-rejected media message as sent.
+         */
+        val messageBytes =
+            message.toByteArray(StandardCharsets.UTF_8).size
+
+        if (messageBytes > MAX_RELAY_EVENT_BYTES) {
+            diagnostic(
+                "MESSAGE PUBLISH ABORTED — event too large bytes=$messageBytes " +
+                    "limit=$MAX_RELAY_EVENT_BYTES packet=${packet.id}"
+            )
+            return false
+        }
+
         val currentSocket =
             socket
 
@@ -566,13 +585,46 @@ class NostrPeerSignaling(
             val message =
                 JSONArray(text)
 
-            if (message.length() < 3) {
+            if (message.length() < 2) {
+                return
+            }
+
+            /*
+             * Relay acknowledgements are:
+             * ["OK", eventId, accepted, message]
+             *
+             * They are deliberately handled separately from incoming
+             * EVENT messages. publishMessage() currently uses the
+             * synchronous websocket.send() result, while this ACK is
+             * still useful for diagnostics and future delivery state.
+             */
+            if (message.optString(0) == "OK") {
+                val eventId =
+                    message.optString(1)
+
+                val accepted =
+                    message.optBoolean(2, false)
+
+                val reason =
+                    message.optString(3)
+
+                diagnostic(
+                    if (accepted) {
+                        "RELAY PUBLISH ACCEPTED — eventId=$eventId"
+                    } else {
+                        "RELAY PUBLISH REJECTED — eventId=$eventId reason=$reason"
+                    }
+                )
                 return
             }
 
             if (
                 message.optString(0) != "EVENT"
             ) {
+                return
+            }
+
+            if (message.length() < 3) {
                 return
             }
 
@@ -1359,6 +1411,13 @@ class NostrPeerSignaling(
     }
 
     companion object {
+
+        /*
+         * Keep a safety margin below the relay's observed ~128 KiB
+         * event limit. This is the serialized Nostr EVENT command size,
+         * not the raw photo size.
+         */
+        private const val MAX_RELAY_EVENT_BYTES = 60 * 1024
         private const val TAG = "NostrPeerSignaling"
 
         private const val SIGNAL_KIND = 20001

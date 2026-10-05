@@ -36,7 +36,10 @@ data class LocalMessage(
     val targetMessageId: String? = null,
     val reaction: String? = null,
     val edited: Boolean = false,
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    val mediaId: String? = null,
+    val mediaMimeType: String? = null,
+    val mediaBase64: String? = null
 )
 
 data class ConversationSummary(
@@ -139,8 +142,12 @@ class MessageStore(
                                 envelope.targetMessageId,
                             reaction =
                                 envelope.reaction,
+                            
                             edited = message.edited,
-                            deleted = message.deleted
+                            deleted = message.deleted,
+                            mediaId = envelope.mediaId,
+                            mediaMimeType = envelope.mediaMimeType,
+                            mediaBase64 = envelope.mediaBase64
                         )
                     }
 
@@ -654,6 +661,27 @@ class MessageStore(
                                 it
                             )
                         }
+
+                        envelope.mediaId?.let {
+                            put(
+                                "local_media_id",
+                                it
+                            )
+                        }
+
+                        envelope.mediaMimeType?.let {
+                            put(
+                                "local_media_mime_type",
+                                it
+                            )
+                        }
+
+                        envelope.mediaBase64?.let {
+                            put(
+                                "local_media_base64",
+                                it
+                            )
+                        }
                     }
                 }
             )
@@ -761,6 +789,18 @@ class MessageStore(
                                     },
                                 reaction =
                                     item.optString("local_reaction").takeIf { it != "null" }.takeIf {
+                                        !it.isNullOrBlank()
+                                    },
+                                mediaId =
+                                    item.optString("local_media_id").takeIf { it != "null" }.takeIf {
+                                        !it.isNullOrBlank()
+                                    },
+                                mediaMimeType =
+                                    item.optString("local_media_mime_type").takeIf { it != "null" }.takeIf {
+                                        !it.isNullOrBlank()
+                                    },
+                                mediaBase64 =
+                                    item.optString("local_media_base64").takeIf { it != "null" }.takeIf {
                                         !it.isNullOrBlank()
                                     }
                             )
