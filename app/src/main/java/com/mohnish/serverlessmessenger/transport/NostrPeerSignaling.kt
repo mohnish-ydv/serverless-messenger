@@ -731,6 +731,11 @@ class NostrPeerSignaling(
                     JSONArray()
                         .put(SIGNAL_KIND)
                 )
+                .put(
+                    "#p",
+                    JSONArray()
+                        .put(localNostrPublicKey)
+                )
 
         val request =
             JSONArray()
