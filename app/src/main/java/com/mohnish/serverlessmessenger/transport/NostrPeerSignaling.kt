@@ -6,6 +6,7 @@ import android.os.Looper
 
 import android.content.Context
 import com.mohnish.serverlessmessenger.data.ContactDirectory
+import com.mohnish.serverlessmessenger.security.MessageCrypto
 import com.mohnish.serverlessmessenger.security.DeviceIdentityManager
 import com.mohnish.serverlessmessenger.security.EncryptedMessagePacket
 import com.mohnish.serverlessmessenger.security.NostrCrypto
@@ -237,12 +238,37 @@ class NostrPeerSignaling(
                     packetJson
             )
 
+        /*
+         * The Nostr event can outlive the contact's locally stored
+         * cryptographic metadata. Therefore carry the sender's CURRENT
+         * identity keys beside the encrypted SignalingCrypto envelope.
+         *
+         * These fields are not trusted merely because they are present:
+         * the agreement key is validated by successful outer decryption,
+         * and the signing key is validated against MessageCrypto's
+         * authenticated packet signature.
+         *
+         * SignalingCrypto.decrypt() ignores these extra JSON fields, so
+         * this remains wire-compatible with the existing outer envelope.
+         */
+        val messageEnvelope =
+            JSONObject(encryptedContent)
+                .put(
+                    "sender_signing_public_key",
+                    localIdentity.publicKeyBase64
+                )
+                .put(
+                    "sender_agreement_public_key",
+                    localIdentity.agreementPublicKeyBase64
+                )
+                .toString()
+
         val event =
             createMessageEvent(
                 recipientNostrKey =
                     recipientNostrKey,
                 content =
-                    encryptedContent
+                    messageEnvelope
             )
 
         val message =
@@ -294,9 +320,11 @@ class NostrPeerSignaling(
 
         diagnostic(
             if (sent) {
-                "MESSAGE EVENT SENT — peerId=$peerId packet=${packet.id}"
+                "MESSAGE EVENT SENT — peerId=$peerId packet=${packet.id} " +
+                    "eventId=${event.optString("id")}"
             } else {
-                "MESSAGE EVENT SEND FAILED — peerId=$peerId"
+                "MESSAGE EVENT SEND FAILED — peerId=$peerId " +
+                    "eventId=${event.optString("id")}"
             }
         )
 
@@ -860,11 +888,16 @@ class NostrPeerSignaling(
         senderNostrKey: String
     ) {
         try {
+            val eventId =
+                event.optString("id").trim()
+
             /*
-             * The outer SignalingCrypto envelope contains the stable
-             * sender identity as plaintext metadata. Read only that
-             * field before decrypting so stale Nostr keys do not break
-             * message delivery.
+             * The sender identity and CURRENT cryptographic keys are
+             * carried beside the encrypted SignalingCrypto envelope.
+             *
+             * Do NOT resolve the sender through ContactDirectory here.
+             * ContactDirectory can contain stale Nostr/agreement/signing
+             * metadata after the peer regenerates an identity.
              */
             val envelope =
                 JSONObject(
@@ -876,28 +909,59 @@ class NostrPeerSignaling(
                     "sender_identity_id"
                 ).trim()
 
+            val recipientIdentityId =
+                envelope.optString(
+                    "recipient_identity_id"
+                ).trim()
+
+            val senderSigningPublicKeyBase64 =
+                envelope.optString(
+                    "sender_signing_public_key"
+                ).trim()
+
+            val senderAgreementPublicKeyBase64 =
+                envelope.optString(
+                    "sender_agreement_public_key"
+                ).trim()
+
             if (senderIdentityId.isBlank()) {
                 diagnostic(
-                    "MESSAGE REJECTED — envelope missing sender_identity_id"
+                    "MESSAGE REJECTED — missing sender_identity_id eventId=$eventId"
                 )
                 return
             }
 
-            val sender =
-                contactDirectory.get(
-                    senderIdentityId
+            if (
+                recipientIdentityId !=
+                localIdentity.identityId
+            ) {
+                diagnostic(
+                    "MESSAGE REJECTED — recipient identity mismatch " +
+                        "eventId=$eventId envelopeRecipient=$recipientIdentityId " +
+                        "local=${localIdentity.identityId}"
                 )
-                    ?: run {
-                        diagnostic(
-                            "MESSAGE REJECTED — sender identity not in contact directory " +
-                                "identityId=$senderIdentityId nostr=$senderNostrKey"
-                        )
-                        return
-                    }
+                return
+            }
+
+            if (senderSigningPublicKeyBase64.isBlank()) {
+                diagnostic(
+                    "MESSAGE REJECTED — missing sender signing key " +
+                        "eventId=$eventId identityId=$senderIdentityId"
+                )
+                return
+            }
+
+            if (senderAgreementPublicKeyBase64.isBlank()) {
+                diagnostic(
+                    "MESSAGE REJECTED — missing sender agreement key " +
+                        "eventId=$eventId identityId=$senderIdentityId"
+                )
+                return
+            }
 
             diagnostic(
-                "MESSAGE MAPPED BY IDENTITY — identityId=$senderIdentityId " +
-                    "eventNostr=$senderNostrKey storedNostr=${sender.nostrPublicKeyHex}"
+                "MESSAGE SENDER METADATA — identityId=$senderIdentityId " +
+                    "nostr=$senderNostrKey eventId=$eventId"
             )
 
             val outerPlaintext =
@@ -907,19 +971,20 @@ class NostrPeerSignaling(
                     senderIdentityId =
                         senderIdentityId,
                     senderAgreementPublicKeyBase64 =
-                        sender.agreementPublicKeyBase64,
+                        senderAgreementPublicKeyBase64,
                     envelope =
                         event.optString("content")
                 )
                     ?: run {
                         diagnostic(
-                            "MESSAGE OUTER DECRYPT FAILED"
+                            "MESSAGE OUTER DECRYPT FAILED — " +
+                                "eventId=$eventId identityId=$senderIdentityId"
                         )
                         return
                     }
 
             diagnostic(
-                "MESSAGE OUTER DECRYPT OK"
+                "MESSAGE OUTER DECRYPT OK — eventId=$eventId"
             )
 
             val packet =
@@ -928,7 +993,7 @@ class NostrPeerSignaling(
                 )
                     ?: run {
                         diagnostic(
-                            "MESSAGE PACKET DECODE FAILED"
+                            "MESSAGE PACKET DECODE FAILED — eventId=$eventId"
                         )
                         return
                     }
@@ -940,23 +1005,87 @@ class NostrPeerSignaling(
                 localIdentity.identityId
             ) {
                 diagnostic(
-                    "MESSAGE REJECTED — packet identity mismatch"
+                    "MESSAGE REJECTED — packet identity mismatch " +
+                        "eventId=$eventId packet=${packet.id}"
+                )
+                return
+            }
+
+            /*
+             * Bind the outer sender agreement key to the authenticated
+             * MessageCrypto packet. This prevents a message from mixing
+             * identity metadata from one key with packet metadata from
+             * another key.
+             */
+            if (
+                packet.senderAgreementPublicKey !=
+                senderAgreementPublicKeyBase64
+            ) {
+                diagnostic(
+                    "MESSAGE REJECTED — sender agreement key mismatch " +
+                        "eventId=$eventId packet=${packet.id}"
                 )
                 return
             }
 
             diagnostic(
-                "MESSAGE IDENTITY RECIPIENT VERIFIED"
+                "MESSAGE IDENTITY RECIPIENT VERIFIED — " +
+                    "eventId=$eventId packet=${packet.id}"
             )
+
+            val packetSignatureValid =
+                MessageCrypto.verifyPacket(
+                    packet =
+                        packet,
+                    senderSigningPublicKeyBase64 =
+                        senderSigningPublicKeyBase64
+                )
+
+            if (!packetSignatureValid) {
+                diagnostic(
+                    "MESSAGE REJECTED — packet signature INVALID " +
+                        "eventId=$eventId packet=${packet.id}"
+                )
+                return
+            }
+
+            diagnostic(
+                "MESSAGE PACKET SIGNATURE VERIFIED — " +
+                    "eventId=$eventId packet=${packet.id}"
+            )
+
+            /*
+             * ContactDirectory is intentionally optional for delivery.
+             *
+             * If a matching contact exists, its public metadata may still
+             * be useful to the UI, but stale contact records must never
+             * prevent cryptographically valid messages from arriving.
+             */
+            val knownContact =
+                contactDirectory.get(
+                    senderIdentityId
+                )
+
+            if (knownContact == null) {
+                diagnostic(
+                    "MESSAGE CONTACT STALE/MISSING — delivering by stable identity " +
+                        "identityId=$senderIdentityId"
+                )
+            } else {
+                diagnostic(
+                    "MESSAGE CONTACT FOUND — identityId=$senderIdentityId"
+                )
+            }
 
             messageListener?.invoke(
                 senderIdentityId,
-                sender.publicKeyBase64,
+                senderSigningPublicKeyBase64,
                 packet
             )
 
             diagnostic(
-                "MESSAGE DELIVERED — peer=$senderIdentityId packet=${packet.id}"
+                "MESSAGE DELIVERED — peer=$senderIdentityId " +
+                    "packet=${packet.id} eventId=$eventId"
             )
         } catch (e: Exception) {
             Log.e(
@@ -964,8 +1093,14 @@ class NostrPeerSignaling(
                 "message event processing failed",
                 e
             )
+
+            diagnostic(
+                "MESSAGE PROCESSING EXCEPTION — ${e::class.java.simpleName}: " +
+                    "${e.message ?: "no message"}"
+            )
         }
     }
+
     private fun encodeMessagePacket(
         packet: EncryptedMessagePacket
     ): String =
