@@ -688,6 +688,25 @@ class NostrPeerSignaling(
                 )
             }
 
+            /*
+             * MESSAGE_KIND has its stable sender identity inside the
+             * encrypted envelope itself. Do not resolve the sender
+             * through the Nostr pubkey first: the contact may contain
+             * an older Nostr key after identity rotation.
+             *
+             * Signal events still use the Nostr key to route the
+             * WebRTC signaling path.
+             */
+            if (
+                event.optInt("kind") == MESSAGE_KIND
+            ) {
+                handleMessageEvent(
+                    event = event,
+                    senderNostrKey = senderNostrKey
+                )
+                return
+            }
+
             val sender =
                 contactDirectory
                     .getByNostrPublicKey(
@@ -695,7 +714,7 @@ class NostrPeerSignaling(
                     )
                     ?: run {
                         diagnostic(
-                            "EVENT REJECTED — sender not in contact directory nostr=$senderNostrKey"
+                            "SIGNAL REJECTED — sender not in contact directory nostr=$senderNostrKey"
                         )
                         return
                     }
@@ -703,21 +722,6 @@ class NostrPeerSignaling(
             diagnostic(
                 "EVENT MAPPED TO CONTACT identityId=${sender.identityId}"
             )
-
-            if (
-                event.optInt("kind") == MESSAGE_KIND
-            ) {
-                handleMessageEvent(
-                    event = event,
-                    senderIdentityId = sender.identityId,
-                    senderSigningPublicKeyBase64 =
-                        sender.publicKeyBase64,
-                    senderAgreementPublicKeyBase64 =
-                        sender.agreementPublicKeyBase64
-                )
-                return
-            }
-
             val decrypted =
                 SignalingCrypto.decrypt(
                     recipientIdentityId =
@@ -796,11 +800,49 @@ class NostrPeerSignaling(
 
     private fun handleMessageEvent(
         event: JSONObject,
-        senderIdentityId: String,
-        senderSigningPublicKeyBase64: String,
-        senderAgreementPublicKeyBase64: String
+        senderNostrKey: String
     ) {
         try {
+            /*
+             * The outer SignalingCrypto envelope contains the stable
+             * sender identity as plaintext metadata. Read only that
+             * field before decrypting so stale Nostr keys do not break
+             * message delivery.
+             */
+            val envelope =
+                JSONObject(
+                    event.optString("content")
+                )
+
+            val senderIdentityId =
+                envelope.optString(
+                    "sender_identity_id"
+                ).trim()
+
+            if (senderIdentityId.isBlank()) {
+                diagnostic(
+                    "MESSAGE REJECTED — envelope missing sender_identity_id"
+                )
+                return
+            }
+
+            val sender =
+                contactDirectory.get(
+                    senderIdentityId
+                )
+                    ?: run {
+                        diagnostic(
+                            "MESSAGE REJECTED — sender identity not in contact directory " +
+                                "identityId=$senderIdentityId nostr=$senderNostrKey"
+                        )
+                        return
+                    }
+
+            diagnostic(
+                "MESSAGE MAPPED BY IDENTITY — identityId=$senderIdentityId " +
+                    "eventNostr=$senderNostrKey storedNostr=${sender.nostrPublicKeyHex}"
+            )
+
             val outerPlaintext =
                 SignalingCrypto.decrypt(
                     recipientIdentityId =
@@ -808,7 +850,7 @@ class NostrPeerSignaling(
                     senderIdentityId =
                         senderIdentityId,
                     senderAgreementPublicKeyBase64 =
-                        senderAgreementPublicKeyBase64,
+                        sender.agreementPublicKeyBase64,
                     envelope =
                         event.optString("content")
                 )
@@ -818,6 +860,10 @@ class NostrPeerSignaling(
                         )
                         return
                     }
+
+            diagnostic(
+                "MESSAGE OUTER DECRYPT OK"
+            )
 
             val packet =
                 decodeMessagePacket(
@@ -842,9 +888,13 @@ class NostrPeerSignaling(
                 return
             }
 
+            diagnostic(
+                "MESSAGE IDENTITY RECIPIENT VERIFIED"
+            )
+
             messageListener?.invoke(
                 senderIdentityId,
-                senderSigningPublicKeyBase64,
+                sender.publicKeyBase64,
                 packet
             )
 
@@ -859,7 +909,6 @@ class NostrPeerSignaling(
             )
         }
     }
-
     private fun encodeMessagePacket(
         packet: EncryptedMessagePacket
     ): String =
