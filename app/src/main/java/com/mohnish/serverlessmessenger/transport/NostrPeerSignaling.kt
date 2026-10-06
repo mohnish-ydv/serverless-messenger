@@ -671,12 +671,22 @@ class NostrPeerSignaling(
 
             diagnostic("EVENT SIGNATURE VERIFIED")
 
-            if (!hasRecipientTag(event)) {
-                diagnostic("EVENT REJECTED — missing recipient tag")
-                return
+            /*
+             * The Nostr p-tag is only a relay/routing hint.
+             *
+             * It can become stale when a device regenerates its
+             * Nostr identity while an existing contact still contains
+             * the previous public key. The actual recipient identity is
+             * authenticated inside the encrypted payload, so do not
+             * reject the event solely because the p-tag is stale.
+             */
+            if (hasRecipientTag(event)) {
+                diagnostic("EVENT RECIPIENT TAG VERIFIED")
+            } else {
+                diagnostic(
+                    "EVENT RECIPIENT TAG STALE/DIFFERENT — continuing to encrypted identity verification"
+                )
             }
-
-            diagnostic("EVENT RECIPIENT TAG VERIFIED")
 
             val sender =
                 contactDirectory
@@ -1086,6 +1096,15 @@ class NostrPeerSignaling(
             event.optJSONArray("tags")
                 ?: return false
 
+        val localKey =
+            localNostrPublicKey
+                .trim()
+                .lowercase()
+
+        diagnostic(
+            "RECIPIENT TAG CHECK — localNostr=$localKey"
+        )
+
         for (
             index in 0 until tags.length()
         ) {
@@ -1093,12 +1112,22 @@ class NostrPeerSignaling(
                 tags.optJSONArray(index)
                     ?: continue
 
-            if (
-                tag.optString(0) == "p" &&
+            val tagType =
+                tag.optString(0)
+                    .trim()
+
+            val tagValue =
                 tag.optString(1)
                     .trim()
-                    .lowercase() ==
-                localNostrPublicKey
+                    .lowercase()
+
+            diagnostic(
+                "RECIPIENT TAG — index=$index type=$tagType value=$tagValue match=${tagType == "p" && tagValue == localKey}"
+            )
+
+            if (
+                tagType == "p" &&
+                tagValue == localKey
             ) {
                 return true
             }
