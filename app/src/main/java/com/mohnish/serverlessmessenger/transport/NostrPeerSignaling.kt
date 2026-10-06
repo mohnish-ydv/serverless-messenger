@@ -1,6 +1,8 @@
 package com.mohnish.serverlessmessenger.transport
 
 import android.util.Log
+import android.os.Handler
+import android.os.Looper
 
 import android.content.Context
 import com.mohnish.serverlessmessenger.data.ContactDirectory
@@ -81,6 +83,12 @@ class NostrPeerSignaling(
 
     private var socket: WebSocket? = null
     private var connected = false
+
+    private val reconnectHandler =
+        Handler(Looper.getMainLooper())
+
+    private var reconnectAttempt = 0
+    private var reconnectScheduled = false
 
     private val subscriptionId =
         "serverless-${UUID.randomUUID()}"
@@ -426,6 +434,8 @@ class NostrPeerSignaling(
                             this@NostrPeerSignaling
                         ) {
                             connected = true
+                            reconnectAttempt = 0
+                            reconnectScheduled = false
 
                             messageConnectionListener?.invoke(true)
 
@@ -483,6 +493,7 @@ class NostrPeerSignaling(
                                 socket = null
                                 connected = false
                                 messageConnectionListener?.invoke(false)
+                                scheduleReconnect()
                             }
                         }
                     }
@@ -504,11 +515,57 @@ class NostrPeerSignaling(
                                 socket = null
                                 connected = false
                                 messageConnectionListener?.invoke(false)
+                                scheduleReconnect()
                             }
                         }
                     }
                 }
             )
+    }
+
+    @Synchronized
+    private fun scheduleReconnect() {
+        if (reconnectScheduled) return
+
+        if (
+            messageListener == null &&
+            incomingListener == null
+        ) {
+            return
+        }
+
+        reconnectScheduled = true
+
+        val delayMs =
+            minOf(
+                30_000L,
+                1_000L shl minOf(reconnectAttempt, 5)
+            )
+
+        reconnectAttempt++
+
+        diagnostic(
+            "RELAY RECONNECT SCHEDULED — " +
+                "delayMs=$delayMs attempt=$reconnectAttempt"
+        )
+
+        reconnectHandler.postDelayed({
+            synchronized(this@NostrPeerSignaling) {
+                reconnectScheduled = false
+
+                if (
+                    !connected &&
+                    socket == null
+                ) {
+                    diagnostic(
+                        "RELAY RECONNECT ATTEMPT — " +
+                            "attempt=$reconnectAttempt"
+                    )
+
+                    connect()
+                }
+            }
+        }, delayMs)
     }
 
     private fun subscribe(
