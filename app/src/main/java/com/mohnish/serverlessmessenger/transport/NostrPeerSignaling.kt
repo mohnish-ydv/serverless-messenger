@@ -519,30 +519,24 @@ class NostrPeerSignaling(
         )
 
         /*
-         * Signaling remains ephemeral.
+         * One subscription handles BOTH:
          *
-         * Messages use regular kind 7777 so relays can retain them
-         * for asynchronous/offline delivery.
+         *   20001 = ephemeral WebRTC signaling
+         *   7777  = encrypted chat messages
+         *
+         * Both are addressed to this device through the same
+         * Nostr recipient tag.
+         *
+         * Keep this as one filter. Some relays are stricter about
+         * multiple filters in a single REQ, and there is no reason
+         * for the two event classes to use separate subscriptions.
          */
-        val signalFilter =
+        val filter =
             JSONObject()
                 .put(
                     "kinds",
                     JSONArray()
                         .put(SIGNAL_KIND)
-                )
-                .put(
-                    "#p",
-                    JSONArray()
-                        .put(localNostrPublicKey)
-                )
-                .put("limit", 0)
-
-        val messageFilter =
-            JSONObject()
-                .put(
-                    "kinds",
-                    JSONArray()
                         .put(MESSAGE_KIND)
                 )
                 .put(
@@ -550,14 +544,12 @@ class NostrPeerSignaling(
                     JSONArray()
                         .put(localNostrPublicKey)
                 )
-                .put("limit", MESSAGE_HISTORY_LIMIT)
 
         val request =
             JSONArray()
                 .put("REQ")
                 .put(subscriptionId)
-                .put(signalFilter)
-                .put(messageFilter)
+                .put(filter)
 
         val requestText =
             request.toString()
