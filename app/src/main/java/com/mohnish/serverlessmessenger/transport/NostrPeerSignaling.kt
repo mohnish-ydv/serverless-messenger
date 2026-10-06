@@ -226,12 +226,29 @@ class NostrPeerSignaling(
          * from the relay. The packet itself remains independently
          * authenticated/encrypted by MessageCrypto.
          */
+        /*
+         * The MessageCrypto packet is the authoritative message identity.
+         * Do not independently take the recipient identity from the
+         * ContactStore here: stale contact metadata can otherwise make the
+         * outer envelope address a different identity than the packet.
+         *
+         * The agreement key still comes from the contact because it is the
+         * key required to encrypt to that peer.
+         */
+        if (packet.recipientIdentityId != peerId) {
+            diagnostic(
+                "MESSAGE PUBLISH ABORTED — packet recipient mismatch " +
+                    "peerId=$peerId packetRecipient=${packet.recipientIdentityId}"
+            )
+            return false
+        }
+
         val encryptedContent =
             SignalingCrypto.encrypt(
                 senderIdentityId =
                     localIdentity.identityId,
                 recipientIdentityId =
-                    contact.identityId,
+                    packet.recipientIdentityId,
                 recipientAgreementPublicKeyBase64 =
                     contact.agreementPublicKeyBase64,
                 plaintext =
