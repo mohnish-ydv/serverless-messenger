@@ -519,17 +519,9 @@ class NostrPeerSignaling(
         )
 
         /*
-         * One subscription handles BOTH:
-         *
-         *   20001 = ephemeral WebRTC signaling
-         *   7777  = encrypted chat messages
-         *
-         * Both are addressed to this device through the same
-         * Nostr recipient tag.
-         *
-         * Keep this as one filter. Some relays are stricter about
-         * multiple filters in a single REQ, and there is no reason
-         * for the two event classes to use separate subscriptions.
+         * Subscribe only by event kind.
+         * Recipient filtering is performed locally by
+         * handleRelayMessage()/hasRecipientTag().
          */
         val filter =
             JSONObject()
@@ -538,11 +530,6 @@ class NostrPeerSignaling(
                     JSONArray()
                         .put(SIGNAL_KIND)
                         .put(MESSAGE_KIND)
-                )
-                .put(
-                    "#p",
-                    JSONArray()
-                        .put(localNostrPublicKey)
                 )
 
         val request =
@@ -581,7 +568,32 @@ class NostrPeerSignaling(
                 return
             }
 
-            /*
+            when (message.optString(0)) {
+
+            "EOSE" -> {
+                diagnostic(
+                    "RELAY SUBSCRIPTION READY — sub=${message.optString(1)}"
+                )
+                return
+            }
+
+            "CLOSED" -> {
+                diagnostic(
+                    "RELAY SUBSCRIPTION CLOSED — sub=${message.optString(1)} " +
+                        "reason=${message.optString(2)}"
+                )
+                return
+            }
+
+            "NOTICE" -> {
+                diagnostic(
+                    "RELAY NOTICE — ${message.optString(1)}"
+                )
+                return
+            }
+        }
+
+        /*
              * Relay acknowledgements are:
              * ["OK", eventId, accepted, message]
              *
