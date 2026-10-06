@@ -93,6 +93,13 @@ class WebRtcTransport(
     private var dataChannelCreated = false
     private var renegotiationInProgress = false
 
+    /*
+     * The DataChannel triggers WebRTC negotiation asynchronously.
+     * The initial SDP offer is therefore driven by onRenegotiationNeeded().
+     */
+    private var initialOfferRequested = false
+    private var offerCreationInProgress = false
+
     private val pendingRemoteIceCandidates =
         mutableListOf<SignalingIceCandidate>()
 
@@ -119,43 +126,81 @@ class WebRtcTransport(
         initializeWebRtc(context)
 
 
+        val options =
+            PeerConnectionFactory.Options().apply {
+                disableNetworkMonitor = true
+            }
+
         factory =
             PeerConnectionFactory
                 .builder()
+                .setOptions(options)
                 .createPeerConnectionFactory()
 
     }
 
     fun createOffer() {
-        diagnostic("CONNECTING — creating local WebRTC offer")
+        diagnostic("CONNECTING — requesting local WebRTC offer")
+
         state = TransportState.CONNECTING
         notifyState()
 
+        initialOfferRequested = true
+        offerCreationInProgress = false
+
         /*
-         * Single-negotiation DataChannel setup.
-         *
-         * The DataChannel must exist before createOffer() so the
-         * generated SDP contains m=application from the beginning.
-         *
-         * We no longer perform a second offer/answer renegotiation.
+         * Creating the DataChannel causes WebRTC to emit
+         * onRenegotiationNeeded(). That callback drives the SDP offer.
          */
         createPeerConnection(createDataChannel = true)
 
-        val connection =
-            requireNotNull(peerConnection)
+        diagnostic(
+            "INITIAL OFFER REQUESTED — waiting for onRenegotiationNeeded"
+        )
+    }
 
-        val channel =
-            dataChannel
+    private fun createInitialOffer() {
+        if (!initialOfferRequested) {
+            diagnostic("INITIAL OFFER SKIPPED — no offer requested")
+            return
+        }
+
+        if (offerCreationInProgress) {
+            diagnostic("INITIAL OFFER SKIPPED — already creating offer")
+            return
+        }
+
+        val connection =
+            peerConnection
                 ?: run {
-                    fail("DataChannel was not created")
+                    fail("Initial offer failed — PeerConnection missing")
                     return
                 }
 
-        dataChannelCreated = true
+        if (dataChannel == null) {
+            fail("Initial offer failed — DataChannel missing")
+            return
+        }
+
+        val signalingState = connection.signalingState()
 
         diagnostic(
-            "DATACHANNEL CREATED BEFORE OFFER — state=${channel.state().name}"
+            "INITIAL OFFER TRIGGERED — signaling state=${signalingState.name}"
         )
+
+        if (
+            signalingState !=
+            PeerConnection.SignalingState.STABLE
+        ) {
+            diagnostic(
+                "INITIAL OFFER WAITING — signaling state=${signalingState.name}"
+            )
+            return
+        }
+
+        offerCreationInProgress = true
+
+        diagnostic("CREATING INITIAL SDP OFFER")
 
         connection.createOffer(
             object : SdpObserverAdapter() {
@@ -164,13 +209,16 @@ class WebRtcTransport(
                     description: SessionDescription
                 ) {
                     val hasApplication =
-                        description.description.contains("m=application")
+                        description.description.contains(
+                            "m=application"
+                        )
 
                     diagnostic(
                         "OFFER CREATED — SDP application=$hasApplication"
                     )
 
                     if (!hasApplication) {
+                        offerCreationInProgress = false
                         fail(
                             "Initial SDP does not contain m=application"
                         )
@@ -181,7 +229,7 @@ class WebRtcTransport(
                         "LOCAL OFFER SDP SUMMARY — " +
                             "type=${description.type.canonicalForm()} " +
                             "length=${description.description.length} " +
-                            "hasApplication=${description.description.contains("m=application")} " +
+                            "hasApplication=$hasApplication " +
                             "hasIce=${description.description.contains("a=ice-ufrag:")} " +
                             "hasFingerprint=${description.description.contains("a=fingerprint:")} " +
                             "hasSetup=${description.description.contains("a=setup:")} " +
@@ -192,8 +240,11 @@ class WebRtcTransport(
                         object : SdpObserverAdapter() {
 
                             override fun onSetSuccess() {
+                                offerCreationInProgress = false
+                                initialOfferRequested = false
+
                                 diagnostic(
-                                    "LOCAL SDP SET — publishing single offer"
+                                    "LOCAL SDP SET — publishing initial offer"
                                 )
 
                                 onLocalDescription?.invoke(
@@ -210,6 +261,8 @@ class WebRtcTransport(
                             override fun onSetFailure(
                                 error: String
                             ) {
+                                offerCreationInProgress = false
+
                                 fail(
                                     "setLocalDescription failed: $error"
                                 )
@@ -222,10 +275,14 @@ class WebRtcTransport(
                 override fun onCreateFailure(
                     error: String
                 ) {
-                    fail("createOffer failed: $error")
+                    offerCreationInProgress = false
+
+                    fail(
+                        "createOffer failed: $error"
+                    )
                 }
             },
-            org.webrtc.MediaConstraints()
+            MediaConstraints()
         )
     }
 
@@ -768,16 +825,22 @@ class WebRtcTransport(
                     override fun onRemoveStream(
                         stream: org.webrtc.MediaStream
                     ) = Unit
-
                     override fun onRenegotiationNeeded() {
                         /*
-                         * DataChannel negotiation is performed explicitly
-                         * by createOffer(). Do not start a second offer here.
+                         * WebRTC can fire this callback synchronously during
+                         * createDataChannel(), before our dataChannel field
+                         * has been assigned.
+                         *
+                         * Therefore the initial offer is NOT created here.
+                         * createPeerConnection() triggers it explicitly
+                         * after the DataChannel has been attached.
                          */
                         diagnostic(
-                            "RENEGOTIATION NEEDED — ignored (explicit offer in progress)"
+                            "RENEGOTIATION NEEDED — waiting for DataChannel attachment"
                         )
                     }
+
+
 
                     override fun onAddTrack(
                         receiver:
@@ -811,6 +874,19 @@ class WebRtcTransport(
             attachDataChannel(
                 requireNotNull(dataChannel)
             )
+
+            /*
+             * createDataChannel() may have fired onRenegotiationNeeded()
+             * before the DataChannel field was assigned.
+             * The channel is now definitely attached, so it is safe
+             * to create the initial SDP offer.
+             */
+            if (initialOfferRequested) {
+                diagnostic(
+                    "DATACHANNEL READY — triggering pending initial offer"
+                )
+                createInitialOffer()
+            }
         }
     }
 

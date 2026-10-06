@@ -47,6 +47,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Button
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
@@ -558,239 +563,254 @@ private fun ConnectionDiagnosticsDialog(
 ) {
     val context = LocalContext.current
 
-    val identity = remember(context) {
-        DeviceIdentityManager.getOrCreate(context)
+    var running by remember {
+        mutableStateOf(false)
     }
 
-    val nostrIdentity = remember(context) {
-        NostrIdentityManager.getOrCreate(context)
+    var transport by remember {
+        mutableStateOf<com.mohnish.serverlessmessenger.transport.WebRtcTransport?>(null)
     }
 
-    var running by remember { mutableStateOf(false) }
-    var identityResult by remember { mutableStateOf<String?>(null) }
-    var nostrResult by remember { mutableStateOf<String?>(null) }
-    var cryptoResult by remember { mutableStateOf<String?>(null) }
-    var relayResult by remember { mutableStateOf<String?>(null) }
-    var webRtcResult by remember { mutableStateOf<String?>(null) }
+    var events by remember {
+        mutableStateOf<List<String>>(emptyList())
+    }
 
-    fun runTests() {
+    var startedAt by remember {
+        mutableStateOf<Long?>(null)
+    }
+
+    fun addEvent(message: String) {
+        android.os.Handler(
+            android.os.Looper.getMainLooper()
+        ).post {
+            val elapsed =
+                startedAt?.let {
+                    ((System.currentTimeMillis() - it) / 1000.0)
+                }
+
+            val prefix =
+                if (elapsed != null) {
+                    "[%6.2fs] ".format(elapsed)
+                } else {
+                    ""
+                }
+
+            events =
+                (events + "$prefix$message").takeLast(300)
+        }
+    }
+
+    fun runWebRtcDiagnostic() {
+        transport?.close()
+
+        events = emptyList()
+        startedAt = System.currentTimeMillis()
         running = true
 
-        identityResult = null
-        nostrResult = null
-        cryptoResult = null
-        relayResult = null
-        webRtcResult = null
+        addEvent("=== WEBRTC DIAGNOSTIC START ===")
+        addEvent("Creating WebRtcTransport")
 
-        identityResult =
-            if (
-                identity.identityId.length == 32 &&
-                identity.publicKeyBase64.isNotBlank() &&
-                identity.agreementPublicKeyBase64.isNotBlank() &&
-                identity.nostrPublicKeyHex.length == 64
-            ) {
-                "PASS — device identity"
-            } else {
-                "FAIL — device identity"
-            }
-
-        try {
-            val message =
-                java.security.MessageDigest
-                    .getInstance("SHA-256")
-                    .digest(
-                        "serverless-diagnostic".toByteArray()
-                    )
-
-            val signature =
-                NostrCrypto.sign(
-                    nostrIdentity.privateKey,
-                    message
-                )
-
-            val valid =
-                NostrCrypto.verify(
-                    nostrIdentity.publicKey,
-                    message,
-                    signature
-                )
-
-            nostrResult =
-                if (valid) {
-                    "PASS — Nostr signing"
-                } else {
-                    "FAIL — signature verification"
-                }
-        } catch (e: Exception) {
-            nostrResult =
-                "FAIL — Nostr: ${e.message ?: "unknown error"}"
-        }
-
-        try {
-            val plaintext =
-                """{"diagnostic":"ok","version":1}"""
-
-            val encrypted =
-                SignalingCrypto.encrypt(
-                    senderIdentityId = identity.identityId,
-                    recipientIdentityId = identity.identityId,
-                    recipientAgreementPublicKeyBase64 =
-                        identity.agreementPublicKeyBase64,
-                    plaintext = plaintext
-                )
-
-            val decrypted =
-                SignalingCrypto.decrypt(
-                    recipientIdentityId = identity.identityId,
-                    senderIdentityId = identity.identityId,
-                    senderAgreementPublicKeyBase64 =
-                        identity.agreementPublicKeyBase64,
-                    envelope = encrypted
-                )
-
-            cryptoResult =
-                if (decrypted == plaintext) {
-                    "PASS — ECDH + AES-GCM"
-                } else {
-                    "FAIL — decrypted value mismatch"
-                }
-        } catch (e: Exception) {
-            cryptoResult =
-                "FAIL — crypto: ${e.message ?: "unknown error"}"
-        }
-
-        try {
-            val transport =
+        val newTransport =
+            try {
                 com.mohnish.serverlessmessenger.transport.WebRtcTransport(
                     context
                 )
-
-            transport.onLocalDescription = {
-                webRtcResult =
-                    "PASS — WebRTC offer + DataChannel setup"
+            } catch (e: Throwable) {
+                addEvent(
+                    "FACTORY ERROR — ${e.javaClass.simpleName}: ${e.message}"
+                )
+                running = false
+                return
             }
 
-            transport.onStateChanged = { state ->
-                if (
-                    state ==
-                    com.mohnish.serverlessmessenger.transport.TransportState.FAILED
-                ) {
-                    webRtcResult =
-                        "FAIL — WebRTC transport failed"
-                    transport.close()
-                }
-            }
+        transport = newTransport
 
-            webRtcResult =
-                "RUNNING — WebRTC offer test"
-
-            transport.createOffer()
-        } catch (e: Throwable) {
-            webRtcResult =
-                "FAIL — WebRTC: ${e.message ?: e.javaClass.simpleName}"
+        newTransport.onDiagnostic = { message ->
+            addEvent(message)
         }
 
-        signaling.testRelay { success, message ->
-            android.os.Handler(
-                android.os.Looper.getMainLooper()
-            ).post {
-                relayResult =
-                    if (success) {
-                        "PASS — $message"
-                    } else {
-                        "FAIL — $message"
-                    }
+        newTransport.onStateChanged = { state ->
+            addEvent("TRANSPORT STATE — ${state.name}")
 
+            if (
+                state ==
+                    com.mohnish.serverlessmessenger.transport.TransportState.FAILED
+            ) {
                 running = false
             }
         }
+
+        newTransport.onLocalDescription = { description ->
+            addEvent(
+                "LOCAL DESCRIPTION CALLBACK — " +
+                    "type=${description.type} " +
+                    "length=${description.sdp.length}"
+            )
+
+            addEvent(
+                "LOCAL SDP HAS APPLICATION — " +
+                    description.sdp.contains("m=application")
+            )
+        }
+
+        newTransport.onLocalIceCandidate = { candidate ->
+            addEvent(
+                "LOCAL ICE CALLBACK — " +
+                    "mid=${candidate.sdpMid} " +
+                    "index=${candidate.sdpMLineIndex}"
+            )
+        }
+
+        addEvent("Calling createOffer()")
+
+        try {
+            newTransport.createOffer()
+        } catch (e: Throwable) {
+            addEvent(
+                "CREATE OFFER EXCEPTION — " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            running = false
+        }
     }
 
-    AlertDialog(
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            transport?.close()
+        }
+    }
+
+    androidx.compose.material3.AlertDialog(
         onDismissRequest = {
-            if (!running) {
-                onDismiss()
+            transport?.close()
+            transport = null
+            onDismiss()
+        },
+        title = {
+            Text("WebRTC Diagnostics")
+        },
+        text = {
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(
+                            rememberScrollState()
+                        ),
+                verticalArrangement =
+                    Arrangement.spacedBy(10.dp)
+            ) {
+
+                Text(
+                    text =
+                        if (running)
+                            "Running local WebRTC negotiation…"
+                        else
+                            "Local WebRTC negotiation test",
+                    style =
+                        MaterialTheme.typography.titleSmall
+                )
+
+                Text(
+                    text =
+                        "This test isolates WebRTC. Nostr production "
+                            + "messaging is not modified.",
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+
+                Button(
+                    onClick = {
+                        runWebRtcDiagnostic()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (running)
+                            "Run Again"
+                        else
+                            "Run WebRTC Test"
+                    )
+                }
+
+                if (events.isNotEmpty()) {
+                    Text(
+                        text = "LIVE EVENT LOG",
+                        style =
+                            MaterialTheme.typography.labelLarge
+                    )
+
+                    Surface(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        tonalElevation = 2.dp,
+                        shape =
+                            MaterialTheme.shapes.medium
+                    ) {
+                        Text(
+                            text = events.joinToString("\n"),
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            val diagnosticText =
+                                events.joinToString("\n")
+
+                            val clipboard =
+                                context.getSystemService(
+                                    Context.CLIPBOARD_SERVICE
+                                ) as android.content.ClipboardManager
+
+                            clipboard.setPrimaryClip(
+                                android.content.ClipData.newPlainText(
+                                    "WebRTC diagnostics",
+                                    diagnosticText
+                                )
+                            )
+
+                            addEvent("DIAGNOSTICS COPIED")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Copy Diagnostics")
+                    }
+                }
+
+                Text(
+                    text =
+                        "Important: this screen tests the LOCAL "
+                            + "offer pipeline. A real peer-to-peer "
+                            + "connection additionally requires the "
+                            + "second device to exchange SDP and ICE.",
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (!running) {
-                        onDismiss()
-                    }
+                    transport?.close()
+                    transport = null
+                    onDismiss()
                 }
             ) {
-                Text(
-                    text = "Done",
-                    color = BrandBlue,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        },
-        dismissButton = {
-            if (!running) {
-                TextButton(
-                    onClick = ::runTests
-                ) {
-                    Text(
-                        text = "Run tests",
-                        color = BrandBlue,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        },
-        title = {
-            Text(
-                text = "Connection diagnostics",
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column {
-                Text(
-                    text = "Checks the real identity, crypto and relay path.",
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                    color = SecondaryText
-                )
-
-                Spacer(Modifier.height(16.dp))
-
-                DiagnosticRow("Device identity", identityResult)
-                DiagnosticRow("Nostr identity", nostrResult)
-                DiagnosticRow("Signaling crypto", cryptoResult)
-                DiagnosticRow("WebRTC", webRtcResult)
-                DiagnosticRow("Nostr relay", relayResult)
-
-                if (running) {
-                    Spacer(Modifier.height(12.dp))
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = BrandBlue,
-                            strokeWidth = 2.dp
-                        )
-
-                        Spacer(Modifier.width(10.dp))
-
-                        Text(
-                            text = "Testing connection…",
-                            fontSize = 13.sp,
-                            color = SecondaryText
-                        )
-                    }
-                }
+                Text("Close")
             }
         }
     )
 }
 
 @Composable
-private fun DiagnosticRow(
+fun DiagnosticRow(
     title: String,
     result: String?
 ) {
