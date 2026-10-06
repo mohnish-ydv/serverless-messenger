@@ -88,6 +88,20 @@ class NostrPeerSignaling(
     private val reconnectHandler =
         Handler(Looper.getMainLooper())
 
+    /*
+     * WebRTC ICE can generate several signaling events almost
+     * simultaneously. Pace those events so a public relay does not see
+     * an unnatural burst that can trigger spam/rate protection.
+     *
+     * Normal chat messages are NOT put through this queue.
+     */
+    private val relaySignalHandler =
+        Handler(Looper.getMainLooper())
+
+    private var nextSignalSendAt = 0L
+
+    private val signalSendIntervalMs = 400L
+
     private var reconnectAttempt = 0
     private var reconnectScheduled = false
 
@@ -154,23 +168,9 @@ class NostrPeerSignaling(
                 "PUBLISH EVENT — peerId=$peerId bytes=${message.length}"
             )
 
-            val currentSocket = socket
-
-            if (currentSocket == null) {
-                diagnostic(
-                    "PUBLISH FAILED — connected=true but socket=null"
-                )
-            } else {
-                val sent = currentSocket.send(message)
-
-                diagnostic(
-                    if (sent) {
-                        "PUBLISH SENT — websocket.send=true"
-                    } else {
-                        "PUBLISH FAILED — websocket.send=false"
-                    }
-                )
-            }
+            scheduleSignalPublish(
+                message = message
+            )
         } else {
             diagnostic(
                 "PUBLISH QUEUED — relay not connected peerId=$peerId"
@@ -496,11 +496,16 @@ class NostrPeerSignaling(
                                 "sending pending events count=${pendingEvents.size}"
                             )
 
-                            pendingEvents.forEach {
-                                webSocket.send(it)
-                            }
+                            val queued =
+                                pendingEvents.toList()
 
                             pendingEvents.clear()
+
+                            queued.forEach { queuedEvent ->
+                                scheduleSignalPublish(
+                                    message = queuedEvent
+                                )
+                            }
                         }
                     }
 
@@ -611,6 +616,66 @@ class NostrPeerSignaling(
                 }
             }
         }, delayMs)
+    }
+
+    /*
+     * Schedule one WebRTC signaling event at a time.
+     *
+     * The queue is deliberately only for PeerSignal/Nostr signaling.
+     * Message events continue to use publishMessage() directly so a
+     * successful websocket.send() still has its existing synchronous
+     * semantics for the chat outbox.
+     */
+    @Synchronized
+    private fun scheduleSignalPublish(
+        message: String
+    ) {
+        val now =
+            System.currentTimeMillis()
+
+        val sendAt =
+            maxOf(
+                now,
+                nextSignalSendAt
+            )
+
+        nextSignalSendAt =
+            sendAt + signalSendIntervalMs
+
+        val delay =
+            sendAt - now
+
+        diagnostic(
+            "PUBLISH SCHEDULED — delayMs=$delay"
+        )
+
+        relaySignalHandler.postDelayed({
+            val currentSocket =
+                synchronized(this@NostrPeerSignaling) {
+                    socket
+                }
+
+            if (
+                currentSocket == null ||
+                !connected
+            ) {
+                diagnostic(
+                    "PUBLISH FAILED — signal socket unavailable at send time"
+                )
+                return@postDelayed
+            }
+
+            val sent =
+                currentSocket.send(message)
+
+            diagnostic(
+                if (sent) {
+                    "PUBLISH SENT — websocket.send=true"
+                } else {
+                    "PUBLISH FAILED — websocket.send=false"
+                }
+            )
+        }, delay)
     }
 
     private fun subscribe(
