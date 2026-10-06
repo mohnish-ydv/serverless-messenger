@@ -82,6 +82,13 @@ class NostrPeerSignaling(
     private val pendingEvents =
         mutableListOf<String>()
 
+    /*
+     * Message events are regular Nostr events. Keep their IDs until
+     * the relay explicitly ACKs or rejects them.
+     */
+    private val pendingMessageEvents =
+        mutableSetOf<String>()
+
     private var socket: WebSocket? = null
     private var connected = false
 
@@ -293,6 +300,16 @@ class NostrPeerSignaling(
                 .put("EVENT")
                 .put(event)
                 .toString()
+
+        val eventId =
+            event.optString("id").trim()
+
+        if (eventId.isNotBlank()) {
+            pendingMessageEvents += eventId
+            diagnostic(
+                "MESSAGE ACK TRACKING — pending eventId=$eventId"
+            )
+        }
 
         /*
          * nos.lol rejects oversized events asynchronously with:
@@ -686,24 +703,41 @@ class NostrPeerSignaling(
         )
 
         /*
-         * Subscribe only by event kind.
-         * Recipient filtering is performed locally by
-         * handleRelayMessage()/hasRecipientTag().
+         * Messages are subscribed by the CURRENT local Nostr p-tag.
+         *
+         * Signals remain on a separate broad filter because their
+         * encrypted identity payload is authoritative and an older
+         * contact may still contain a stale Nostr key.
+         *
+         * Multiple filters in one REQ are OR'ed by NIP-01 relays.
          */
-        val filter =
+        val messageFilter =
+            JSONObject()
+                .put(
+                    "kinds",
+                    JSONArray()
+                        .put(MESSAGE_KIND)
+                )
+                .put(
+                    "#p",
+                    JSONArray()
+                        .put(localNostrPublicKey)
+                )
+
+        val signalFilter =
             JSONObject()
                 .put(
                     "kinds",
                     JSONArray()
                         .put(SIGNAL_KIND)
-                        .put(MESSAGE_KIND)
                 )
 
         val request =
             JSONArray()
                 .put("REQ")
                 .put(subscriptionId)
-                .put(filter)
+                .put(messageFilter)
+                .put(signalFilter)
 
         val requestText =
             request.toString()
@@ -779,13 +813,20 @@ class NostrPeerSignaling(
                 val reason =
                     message.optString(3)
 
-                diagnostic(
-                    if (accepted) {
+                if (accepted) {
+                    pendingMessageEvents.remove(eventId)
+
+                    diagnostic(
                         "RELAY PUBLISH ACCEPTED — eventId=$eventId"
-                    } else {
+                    )
+                } else {
+                    pendingMessageEvents.remove(eventId)
+
+                    diagnostic(
                         "RELAY PUBLISH REJECTED — eventId=$eventId reason=$reason"
-                    }
-                )
+                    )
+                }
+
                 return
             }
 
@@ -1164,6 +1205,8 @@ class NostrPeerSignaling(
                 senderSigningPublicKeyBase64,
                 packet
             )
+
+            pendingMessageEvents.remove(eventId)
 
             diagnostic(
                 "MESSAGE DELIVERED — peer=$senderIdentityId " +
