@@ -286,6 +286,27 @@ class PeerConnectionManager(
         agreementPublicKeyBase64: String,
         signal: PeerSignal
     ) {
+        /*
+         * Nostr's WebSocket callback carries both WebRTC signaling
+         * and normal messages. Never perform PeerConnection work
+         * directly on that callback thread.
+         */
+        scope.launch {
+            handleWebRtcSignalOnIo(
+                peerId = peerId,
+                signingPublicKeyBase64 = signingPublicKeyBase64,
+                agreementPublicKeyBase64 = agreementPublicKeyBase64,
+                signal = signal
+            )
+        }
+    }
+
+    private fun handleWebRtcSignalOnIo(
+        peerId: String,
+        signingPublicKeyBase64: String,
+        agreementPublicKeyBase64: String,
+        signal: PeerSignal
+    ) {
 
         val session =
             synchronized(sessions) {
@@ -380,19 +401,14 @@ class PeerConnectionManager(
             "PEER SESSION READY — starting WebRTC"
         )
 
-        signaling.setListener(
-            peerId = peerId
-        ) { signal ->
-
-            handleWebRtcSignal(
-                peerId = peerId,
-                signingPublicKeyBase64 =
-                    session.signingPublicKeyBase64,
-                agreementPublicKeyBase64 =
-                    session.agreementPublicKeyBase64,
-                signal = signal
-            )
-        }
+        /*
+         * WebRTC signals use the single global incoming listener
+         * registered in init().
+         *
+         * Do not install a per-peer Nostr listener here. The same
+         * Nostr transport carries normal chat messages, so WebRTC
+         * routing must not compete with the message transport.
+         */
 
         val transport =
             createWebRtcTransport(session)
